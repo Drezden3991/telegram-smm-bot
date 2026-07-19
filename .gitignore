@@ -1,0 +1,55 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# PyCharm and IDE files
+.idea/
+*.iml
+
+# Local data created or updated by the bot
+/clients.txt
+/post_ideas.txt
+/posts.txt
+/content_plans.txt
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Logs, temporary files, and local sessions
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.session
+*.session-journal
+/logs/
+/tmp/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
