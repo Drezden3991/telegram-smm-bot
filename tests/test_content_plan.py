@@ -104,7 +104,65 @@ class ContentPlanTests(unittest.TestCase):
                 content_plan.generate_ai_content_plan("Тестовый бриф")
 
 
+class TelegramTextSplittingTests(unittest.TestCase):
+    def test_text_shorter_than_limit_stays_in_one_chunk(self):
+        text = "Короткий список контент-планов"
+
+        chunks = content_plan.split_text_for_telegram(text)
+
+        self.assertEqual(chunks, [text])
+
+    def test_text_longer_than_limit_is_split(self):
+        text = ("Строка контент-плана\n" * 300).strip()
+
+        chunks = content_plan.split_text_for_telegram(text)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(chunks[0].endswith("\n"))
+
+    def test_no_chunk_exceeds_telegram_limit(self):
+        text = ("Слово " * 2000) + ("Д" * 5000)
+
+        chunks = content_plan.split_text_for_telegram(text)
+
+        self.assertTrue(chunks)
+        self.assertTrue(
+            all(
+                len(chunk) <= content_plan.TELEGRAM_MESSAGE_LIMIT
+                for chunk in chunks
+            )
+        )
+
+    def test_joining_chunks_preserves_original_text(self):
+        text = (
+            "📋 Мои контент-планы:\n\n"
+            + ("День 1\nЦель: тестовая цель\n\n" * 250)
+            + "Введите номер контент-плана:"
+        )
+
+        chunks = content_plan.split_text_for_telegram(text)
+
+        self.assertEqual("".join(chunks), text)
+
+
 class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_markup_is_added_only_to_last_chunk(self):
+        message = FakeMessage("")
+
+        await content_plan.send_long_message(
+            message,
+            "Строка\n" * 1000,
+            reply_markup=content_plan.content_plan_menu,
+        )
+
+        self.assertGreater(len(message.answers), 1)
+        for _, kwargs in message.answers[:-1]:
+            self.assertNotIn("reply_markup", kwargs)
+        self.assertIs(
+            message.answers[-1][1]["reply_markup"],
+            content_plan.content_plan_menu,
+        )
+
     async def test_api_error_does_not_save_content_plan(self):
         message = FakeMessage("Ниша: кофе; аудитория: жители города; цель: продажи")
         state = FakeState()

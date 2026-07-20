@@ -29,6 +29,7 @@ OPENAI_MODEL = "gpt-5.6"
 OPENAI_REASONING_EFFORT: ReasoningEffort = "low"
 OPENAI_TIMEOUT_SECONDS = 45.0
 MAX_BRIEF_LENGTH = 500
+TELEGRAM_MESSAGE_LIMIT = 4096
 
 CONTENT_PLAN_INSTRUCTIONS = (
     "Ты опытный SMM-стратег для Telegram. Создай практичный контент-план "
@@ -227,6 +228,63 @@ def format_content_plans_list(content_plans):
     return result
 
 
+def split_text_for_telegram(
+    text: str,
+    max_length: int = TELEGRAM_MESSAGE_LIMIT,
+) -> list[str]:
+    if max_length < 1:
+        raise ValueError("max_length must be greater than zero")
+
+    chunks = []
+    remaining_text = text
+
+    while len(remaining_text) > max_length:
+        split_position = remaining_text.rfind(
+            "\n",
+            0,
+            max_length,
+        )
+
+        if split_position > 0:
+            split_position += 1
+        else:
+            split_position = remaining_text.rfind(
+                " ",
+                0,
+                max_length,
+            )
+
+            if split_position > 0:
+                split_position += 1
+            else:
+                split_position = max_length
+
+        chunks.append(remaining_text[:split_position])
+        remaining_text = remaining_text[split_position:]
+
+    if remaining_text:
+        chunks.append(remaining_text)
+
+    return chunks
+
+
+async def send_long_message(
+    message: Message,
+    text: str,
+    reply_markup: ReplyKeyboardMarkup | None = None,
+) -> None:
+    chunks = split_text_for_telegram(text)
+
+    for index, chunk in enumerate(chunks):
+        if reply_markup is not None and index == len(chunks) - 1:
+            await message.answer(
+                chunk,
+                reply_markup=reply_markup,
+            )
+        else:
+            await message.answer(chunk)
+
+
 @router.message(F.text == "📅 Контент-план")
 async def open_content_plan_menu(message: Message):
     await message.answer(
@@ -309,7 +367,8 @@ async def show_content_plans(message: Message):
         )
         return
 
-    await message.answer(
+    await send_long_message(
+        message,
         format_content_plans_list(content_plans)
     )
 
@@ -349,7 +408,8 @@ async def search_content_plan(
         )
         return
 
-    await message.answer(
+    await send_long_message(
+        message,
         format_content_plans_list(found_content_plans),
         reply_markup=content_plan_menu,
     )
@@ -370,7 +430,8 @@ async def ask_delete_content_plan_number(
 
     await state.set_state(DeleteContentPlan.waiting_for_number)
 
-    await message.answer(
+    await send_long_message(
+        message,
         format_content_plans_list(content_plans)
         + "Введите номер контент-плана, который нужно удалить:"
     )
@@ -424,7 +485,8 @@ async def ask_edit_content_plan_number(
 
     await state.set_state(EditContentPlan.waiting_for_number)
 
-    await message.answer(
+    await send_long_message(
+        message,
         format_content_plans_list(content_plans)
         + "Введите номер контент-плана, который нужно отредактировать:"
     )
