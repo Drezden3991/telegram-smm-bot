@@ -1,6 +1,7 @@
 import json
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
@@ -797,7 +798,10 @@ async def get_delete_id(
     )
 
 
-@router.message(F.text == BACK_BUTTON)
+@router.message(
+    StateFilter(None),
+    F.text == BACK_BUTTON,
+)
 async def back(message: Message):
     await message.answer(
         "Главное меню:",

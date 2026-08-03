@@ -1,6 +1,7 @@
 import random
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
@@ -332,7 +333,10 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
     )
 
 
-@router.message(F.text == "⬅️ Назад")
+@router.message(
+    StateFilter(None),
+    F.text == "⬅️ Назад",
+)
 async def back(message: Message, state: FSMContext):
     await state.clear()
 

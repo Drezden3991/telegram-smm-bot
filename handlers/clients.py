@@ -1,4 +1,5 @@
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 from handlers.start import main_menu
@@ -283,7 +284,10 @@ async def ask_client_to_search(message: Message):
     await message.answer("Введите имя, фамилию или часть текста для поиска:")
 
 
-@router.message(F.text == "⬅️ Назад")
+@router.message(
+    StateFilter(None),
+    F.text == "⬅️ Назад",
+)
 async def back(message: Message):
     global new_client
     global client_to_edit
