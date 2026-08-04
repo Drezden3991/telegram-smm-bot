@@ -112,6 +112,56 @@ def format_post_ideas_list(post_ideas):
     return text
 
 
+@router.message(
+    StateFilter(
+        AddPostIdea.waiting_for_idea,
+        DeletePostIdea.waiting_for_idea_number,
+        SearchPostIdea.waiting_for_search_text,
+        EditPostIdea.waiting_for_idea_number,
+    ),
+    F.text == "⬅️ Назад",
+)
+async def cancel_post_idea_action(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+
+    await message.answer(
+        "💡 Раздел «Идея постов»\n\nВыбери действие:",
+        reply_markup=post_ideas_menu,
+    )
+
+
+@router.message(
+    EditPostIdea.waiting_for_new_idea_text,
+    F.text == "⬅️ Назад",
+)
+async def back_to_post_idea_number(
+    message: Message,
+    state: FSMContext,
+):
+    post_ideas = load_post_ideas()
+
+    if not post_ideas:
+        await state.clear()
+
+        await message.answer(
+            "Список идей пока пуст.",
+            reply_markup=post_ideas_menu,
+        )
+        return
+
+    await state.set_state(
+        EditPostIdea.waiting_for_idea_number
+    )
+
+    await message.answer(
+        format_post_ideas_list(post_ideas)
+        + "\nВведите номер идеи, которую нужно отредактировать:"
+    )
+
+
 @router.message(F.text == "💡 Идея постов")
 async def open_post_ideas_menu(message: Message):
     await message.answer(
@@ -287,7 +337,10 @@ async def choose_post_idea_for_edit(message: Message, state: FSMContext):
         await message.answer("Идеи с таким номером нет.")
         return
 
-    await state.update_data(idea_number=idea_number)
+    await state.update_data(
+        idea_number=idea_number,
+        selected_idea=post_ideas[idea_number - 1],
+    )
 
     await state.set_state(EditPostIdea.waiting_for_new_idea_text)
 
@@ -301,7 +354,34 @@ async def choose_post_idea_for_edit(message: Message, state: FSMContext):
 async def save_edited_post_idea(message: Message, state: FSMContext):
     post_ideas = load_post_ideas()
     data = await state.get_data()
-    idea_number = data["idea_number"]
+    idea_number = data.get("idea_number")
+    selected_idea = data.get("selected_idea")
+
+    if (
+        not isinstance(idea_number, int)
+        or idea_number < 1
+        or idea_number > len(post_ideas)
+        or post_ideas[idea_number - 1] != selected_idea
+    ):
+        if not post_ideas:
+            await state.clear()
+
+            await message.answer(
+                "Список идей изменился, и сохранённых идей больше нет.",
+                reply_markup=post_ideas_menu,
+            )
+            return
+
+        await state.set_state(
+            EditPostIdea.waiting_for_idea_number
+        )
+
+        await message.answer(
+            format_post_ideas_list(post_ideas)
+            + "\nСписок идей изменился. "
+            "Выберите номер идеи заново:"
+        )
+        return
 
     new_idea = message.text
 

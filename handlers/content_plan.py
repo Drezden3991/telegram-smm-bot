@@ -859,10 +859,25 @@ async def show_client_selection(message):
 
 async def show_idea_selection(
     message,
+    state,
     selected_ideas,
     show_full_list=True,
+    post_ideas=None,
 ):
-    post_ideas = load_post_ideas()
+    if post_ideas is None:
+        post_ideas = load_post_ideas()
+
+    post_ideas = list(post_ideas)
+    selected_ideas = [
+        idea
+        for idea in selected_ideas
+        if idea in post_ideas
+    ]
+
+    await state.update_data(
+        post_idea_choices=post_ideas,
+        selected_ideas=selected_ideas,
+    )
 
     ideas_menu = create_ideas_menu(
         post_ideas,
@@ -1010,6 +1025,7 @@ async def select_client_for_new_plan(
 
     await show_idea_selection(
         message,
+        state,
         [],
     )
 
@@ -1037,9 +1053,13 @@ async def select_ideas_for_new_plan(
     state: FSMContext,
 ):
     selected_text = (message.text or "").strip()
-    post_ideas = load_post_ideas()
+    current_post_ideas = load_post_ideas()
 
     data = await state.get_data()
+    post_ideas = data.get(
+        "post_idea_choices",
+        current_post_ideas,
+    )
     selected_ideas = list(
         data.get("selected_ideas", [])
     )
@@ -1057,6 +1077,35 @@ async def select_ideas_for_new_plan(
         return
 
     if selected_text == FINISH_IDEAS_BUTTON:
+        missing_selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea not in current_post_ideas
+        ]
+
+        if missing_selected_ideas:
+            selected_ideas = [
+                idea
+                for idea in selected_ideas
+                if idea in current_post_ideas
+            ]
+
+            await state.update_data(
+                selected_ideas=selected_ideas
+            )
+
+            await message.answer(
+                "Список идей изменился. "
+                "Выбери доступные идеи заново."
+            )
+            await show_idea_selection(
+                message,
+                state,
+                selected_ideas,
+                post_ideas=current_post_ideas,
+            )
+            return
+
         if not selected_ideas:
             await message.answer(
                 "Сначала выбери хотя бы одну идею "
@@ -1093,6 +1142,29 @@ async def select_ideas_for_new_plan(
 
     selected_idea = post_ideas[selected_number - 1]
 
+    if selected_idea not in current_post_ideas:
+        selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea in current_post_ideas
+        ]
+
+        await state.update_data(
+            selected_ideas=selected_ideas
+        )
+
+        await message.answer(
+            "Список идей изменился. "
+            "Выбери идею в обновлённом списке."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=current_post_ideas,
+        )
+        return
+
     if selected_idea in selected_ideas:
         selected_ideas.remove(selected_idea)
     else:
@@ -1104,8 +1176,10 @@ async def select_ideas_for_new_plan(
 
     await show_idea_selection(
         message,
+        state,
         selected_ideas,
         show_full_list=False,
+        post_ideas=post_ideas,
     )
 
 
@@ -1130,6 +1204,7 @@ async def back_to_create_idea_selection(
 
     await show_idea_selection(
         message,
+        state,
         selected_ideas,
     )
 
@@ -1169,6 +1244,39 @@ async def create_content_plan(
         [],
     )
 
+    current_post_ideas = load_post_ideas()
+    missing_selected_ideas = [
+        idea
+        for idea in selected_ideas
+        if idea not in current_post_ideas
+    ]
+
+    if missing_selected_ideas:
+        selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea in current_post_ideas
+        ]
+
+        await state.update_data(
+            selected_ideas=selected_ideas
+        )
+        await state.set_state(
+            CreateContentPlan.waiting_for_ideas
+        )
+
+        await message.answer(
+            "Список идей изменился. "
+            "Выбери доступные идеи заново."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=current_post_ideas,
+        )
+        return
+
     await message.answer(
         "⏳ Создаю контент-план "
         "с помощью GPT-5.6..."
@@ -1187,6 +1295,39 @@ async def create_content_plan(
         await message.answer(
             str(error),
             reply_markup=content_plan_menu,
+        )
+        return
+
+    latest_post_ideas = load_post_ideas()
+    missing_selected_ideas = [
+        idea
+        for idea in selected_ideas
+        if idea not in latest_post_ideas
+    ]
+
+    if missing_selected_ideas:
+        selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea in latest_post_ideas
+        ]
+
+        await state.update_data(
+            selected_ideas=selected_ideas
+        )
+        await state.set_state(
+            CreateContentPlan.waiting_for_ideas
+        )
+
+        await message.answer(
+            "Список идей изменился во время создания. "
+            "Контент-план не сохранён; выбери идеи заново."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=latest_post_ideas,
         )
         return
 
@@ -1720,6 +1861,7 @@ async def select_client_for_edit(
 
     await show_idea_selection(
         message,
+        state,
         [],
     )
 
@@ -1747,9 +1889,13 @@ async def select_ideas_for_edit(
     state: FSMContext,
 ):
     selected_text = (message.text or "").strip()
-    post_ideas = load_post_ideas()
+    current_post_ideas = load_post_ideas()
 
     data = await state.get_data()
+    post_ideas = data.get(
+        "post_idea_choices",
+        current_post_ideas,
+    )
     selected_ideas = list(
         data.get("selected_ideas", [])
     )
@@ -1767,6 +1913,35 @@ async def select_ideas_for_edit(
         return
 
     if selected_text == FINISH_IDEAS_BUTTON:
+        missing_selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea not in current_post_ideas
+        ]
+
+        if missing_selected_ideas:
+            selected_ideas = [
+                idea
+                for idea in selected_ideas
+                if idea in current_post_ideas
+            ]
+
+            await state.update_data(
+                selected_ideas=selected_ideas
+            )
+
+            await message.answer(
+                "Список идей изменился. "
+                "Выбери доступные идеи заново."
+            )
+            await show_idea_selection(
+                message,
+                state,
+                selected_ideas,
+                post_ideas=current_post_ideas,
+            )
+            return
+
         if not selected_ideas:
             await message.answer(
                 "Сначала выбери хотя бы одну идею "
@@ -1803,6 +1978,29 @@ async def select_ideas_for_edit(
 
     selected_idea = post_ideas[selected_number - 1]
 
+    if selected_idea not in current_post_ideas:
+        selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea in current_post_ideas
+        ]
+
+        await state.update_data(
+            selected_ideas=selected_ideas
+        )
+
+        await message.answer(
+            "Список идей изменился. "
+            "Выбери идею в обновлённом списке."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=current_post_ideas,
+        )
+        return
+
     if selected_idea in selected_ideas:
         selected_ideas.remove(selected_idea)
     else:
@@ -1814,8 +2012,10 @@ async def select_ideas_for_edit(
 
     await show_idea_selection(
         message,
+        state,
         selected_ideas,
         show_full_list=False,
+        post_ideas=post_ideas,
     )
 
 
@@ -1840,6 +2040,7 @@ async def back_to_edit_idea_selection(
 
     await show_idea_selection(
         message,
+        state,
         selected_ideas,
     )
 
@@ -1904,6 +2105,39 @@ async def edit_content_plan(
         )
         return
 
+    current_post_ideas = load_post_ideas()
+    missing_selected_ideas = [
+        idea
+        for idea in selected_ideas
+        if idea not in current_post_ideas
+    ]
+
+    if missing_selected_ideas:
+        selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea in current_post_ideas
+        ]
+
+        await state.update_data(
+            selected_ideas=selected_ideas
+        )
+        await state.set_state(
+            EditContentPlan.waiting_for_ideas
+        )
+
+        await message.answer(
+            "Список идей изменился. "
+            "Выбери доступные идеи заново."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=current_post_ideas,
+        )
+        return
+
     await message.answer(
         "⏳ Обновляю контент-план "
         "с помощью GPT-5.6..."
@@ -1924,6 +2158,39 @@ async def edit_content_plan(
         await message.answer(
             str(error),
             reply_markup=content_plan_menu,
+        )
+        return
+
+    latest_post_ideas = load_post_ideas()
+    missing_selected_ideas = [
+        idea
+        for idea in selected_ideas
+        if idea not in latest_post_ideas
+    ]
+
+    if missing_selected_ideas:
+        selected_ideas = [
+            idea
+            for idea in selected_ideas
+            if idea in latest_post_ideas
+        ]
+
+        await state.update_data(
+            selected_ideas=selected_ideas
+        )
+        await state.set_state(
+            EditContentPlan.waiting_for_ideas
+        )
+
+        await message.answer(
+            "Список идей изменился во время обновления. "
+            "Контент-план не сохранён; выбери идеи заново."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=latest_post_ideas,
         )
         return
 

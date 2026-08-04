@@ -1,5 +1,7 @@
 from aiogram import F, Router
 from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 from handlers.start import main_menu
@@ -9,22 +11,21 @@ router = Router()
 
 
 clients = []
-new_client = {}
-client_to_edit = {}
-field_to_edit = ""
 
-waiting_for_client_name = False
-waiting_for_client_last_name = False
-waiting_for_client_phone = False
-waiting_for_client_instagram = False
-waiting_for_client_email = False
-waiting_for_client_notes = False
-waiting_for_client_delete = False
-waiting_for_client_edit_name = False
-waiting_for_client_edit_field = False
-waiting_for_client_edit_value = False
-waiting_for_client_search = False
-waiting_for_client_card = False
+
+class ClientFlow(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_last_name = State()
+    waiting_for_phone = State()
+    waiting_for_instagram = State()
+    waiting_for_email = State()
+    waiting_for_notes = State()
+    waiting_for_delete = State()
+    waiting_for_edit_name = State()
+    waiting_for_edit_field = State()
+    waiting_for_edit_value = State()
+    waiting_for_search = State()
+    waiting_for_card = State()
 
 
 clients_menu = ReplyKeyboardMarkup(
@@ -132,34 +133,6 @@ def client_exists(name, last_name):
     return find_client_by_full_name(name, last_name) is not None
 
 
-def reset_waiting():
-    global waiting_for_client_name
-    global waiting_for_client_last_name
-    global waiting_for_client_phone
-    global waiting_for_client_instagram
-    global waiting_for_client_email
-    global waiting_for_client_notes
-    global waiting_for_client_delete
-    global waiting_for_client_edit_name
-    global waiting_for_client_edit_field
-    global waiting_for_client_edit_value
-    global waiting_for_client_search
-    global waiting_for_client_card
-
-    waiting_for_client_name = False
-    waiting_for_client_last_name = False
-    waiting_for_client_phone = False
-    waiting_for_client_instagram = False
-    waiting_for_client_email = False
-    waiting_for_client_notes = False
-    waiting_for_client_delete = False
-    waiting_for_client_edit_name = False
-    waiting_for_client_edit_field = False
-    waiting_for_client_edit_value = False
-    waiting_for_client_search = False
-    waiting_for_client_card = False
-
-
 def format_client(client, number):
     return (
         f"{number}. {client['name']} {client['last_name']}\n"
@@ -217,7 +190,12 @@ load_clients()
 
 
 @router.message(F.text == "👥 Клиенты")
-async def open_clients_menu(message: Message):
+async def open_clients_menu(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+
     await message.answer(
         "👥 Раздел «Клиенты»\n\nВыбери действие:",
         reply_markup=clients_menu
@@ -225,19 +203,24 @@ async def open_clients_menu(message: Message):
 
 
 @router.message(F.text == "➕ Добавить клиента")
-async def ask_client_name(message: Message):
-    global waiting_for_client_name
-    global new_client
-
-    reset_waiting()
-    new_client = {}
-    waiting_for_client_name = True
+async def ask_client_name(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await state.set_state(ClientFlow.waiting_for_name)
+    await state.update_data(new_client={})
 
     await message.answer("Введите имя клиента:")
 
 
 @router.message(F.text == "📋 Список клиентов")
-async def show_clients(message: Message):
+async def show_clients(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+
     if clients:
         await message.answer(format_clients_list("📋 Список клиентов:", clients))
     else:
@@ -245,59 +228,58 @@ async def show_clients(message: Message):
 
 
 @router.message(F.text == "👤 Карточка клиента")
-async def ask_client_card(message: Message):
-    global waiting_for_client_card
-
-    reset_waiting()
-    waiting_for_client_card = True
+async def ask_client_card(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await state.set_state(ClientFlow.waiting_for_card)
 
     await message.answer("Введите имя и фамилию клиента через пробел:")
 
 
 @router.message(F.text == "❌ Удалить клиента")
-async def ask_client_to_delete(message: Message):
-    global waiting_for_client_delete
-
-    reset_waiting()
-    waiting_for_client_delete = True
+async def ask_client_to_delete(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await state.set_state(ClientFlow.waiting_for_delete)
 
     await message.answer("Введите имя и фамилию клиента через пробел:")
 
 
 @router.message(F.text == "✏️ Редактировать клиента")
-async def ask_client_to_edit(message: Message):
-    global waiting_for_client_edit_name
-
-    reset_waiting()
-    waiting_for_client_edit_name = True
+async def ask_client_to_edit(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await state.set_state(ClientFlow.waiting_for_edit_name)
 
     await message.answer("Введите имя и фамилию клиента через пробел:")
 
 
 @router.message(F.text == "🔎 Найти клиента")
-async def ask_client_to_search(message: Message):
-    global waiting_for_client_search
-
-    reset_waiting()
-    waiting_for_client_search = True
+async def ask_client_to_search(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await state.set_state(ClientFlow.waiting_for_search)
 
     await message.answer("Введите имя, фамилию или часть текста для поиска:")
 
 
 @router.message(
-    StateFilter(None),
+    StateFilter(ClientFlow),
     F.text == "⬅️ Назад",
 )
-async def back(message: Message):
-    global new_client
-    global client_to_edit
-    global field_to_edit
-
-    reset_waiting()
-
-    new_client = {}
-    client_to_edit = {}
-    field_to_edit = ""
+async def back(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
 
     await message.answer(
         "Главное меню:",
@@ -305,67 +287,66 @@ async def back(message: Message):
     )
 
 
-@router.message()
-async def handle_client_text(message: Message):
-    global waiting_for_client_name
-    global waiting_for_client_last_name
-    global waiting_for_client_phone
-    global waiting_for_client_instagram
-    global waiting_for_client_email
-    global waiting_for_client_notes
-    global waiting_for_client_delete
-    global waiting_for_client_edit_name
-    global waiting_for_client_edit_field
-    global waiting_for_client_edit_value
-    global waiting_for_client_search
-    global waiting_for_client_card
-    global new_client
-    global client_to_edit
-    global field_to_edit
+@router.message(StateFilter(ClientFlow))
+async def handle_client_text(
+    message: Message,
+    state: FSMContext,
+):
+    current_state = await state.get_state()
+    data = await state.get_data()
 
-    if waiting_for_client_name:
+    if current_state == ClientFlow.waiting_for_name.state:
+        new_client = data.get("new_client", {})
         new_client["name"] = message.text
-        waiting_for_client_name = False
-        waiting_for_client_last_name = True
+
+        await state.update_data(new_client=new_client)
+        await state.set_state(ClientFlow.waiting_for_last_name)
 
         await message.answer("Введите фамилию клиента:")
 
-    elif waiting_for_client_last_name:
+    elif current_state == ClientFlow.waiting_for_last_name.state:
+        new_client = data.get("new_client", {})
         new_client["last_name"] = message.text
 
         if client_exists(new_client["name"], new_client["last_name"]):
-            new_client = {}
-            waiting_for_client_last_name = False
+            await state.clear()
 
             await message.answer("Такой клиент уже существует.")
         else:
-            waiting_for_client_last_name = False
-            waiting_for_client_phone = True
+            await state.update_data(new_client=new_client)
+            await state.set_state(ClientFlow.waiting_for_phone)
 
             await message.answer("Введите телефон клиента:")
 
-    elif waiting_for_client_phone:
+    elif current_state == ClientFlow.waiting_for_phone.state:
+        new_client = data.get("new_client", {})
         new_client["phone"] = message.text
-        waiting_for_client_phone = False
-        waiting_for_client_instagram = True
+
+        await state.update_data(new_client=new_client)
+        await state.set_state(ClientFlow.waiting_for_instagram)
 
         await message.answer("Введите Instagram клиента:")
 
-    elif waiting_for_client_instagram:
+    elif current_state == ClientFlow.waiting_for_instagram.state:
+        new_client = data.get("new_client", {})
         new_client["instagram"] = message.text
-        waiting_for_client_instagram = False
-        waiting_for_client_email = True
+
+        await state.update_data(new_client=new_client)
+        await state.set_state(ClientFlow.waiting_for_email)
 
         await message.answer("Введите email клиента:")
 
-    elif waiting_for_client_email:
+    elif current_state == ClientFlow.waiting_for_email.state:
+        new_client = data.get("new_client", {})
         new_client["email"] = message.text
-        waiting_for_client_email = False
-        waiting_for_client_notes = True
+
+        await state.update_data(new_client=new_client)
+        await state.set_state(ClientFlow.waiting_for_notes)
 
         await message.answer("Введите заметки о клиенте:")
 
-    elif waiting_for_client_notes:
+    elif current_state == ClientFlow.waiting_for_notes.state:
+        new_client = data.get("new_client", {})
         new_client["notes"] = message.text
 
         clients.append(new_client)
@@ -373,12 +354,11 @@ async def handle_client_text(message: Message):
 
         full_name = f"{new_client['name']} {new_client['last_name']}"
 
-        new_client = {}
-        waiting_for_client_notes = False
+        await state.clear()
 
         await message.answer(f"✅ Клиент «{full_name}» добавлен.")
 
-    elif waiting_for_client_card:
+    elif current_state == ClientFlow.waiting_for_card.state:
         parts = message.text.split(maxsplit=1)
 
         if len(parts) < 2:
@@ -393,9 +373,9 @@ async def handle_client_text(message: Message):
             else:
                 await message.answer(f"Клиент «{name} {last_name}» не найден.")
 
-            waiting_for_client_card = False
+            await state.clear()
 
-    elif waiting_for_client_delete:
+    elif current_state == ClientFlow.waiting_for_delete.state:
         parts = message.text.split(maxsplit=1)
 
         if len(parts) < 2:
@@ -413,9 +393,9 @@ async def handle_client_text(message: Message):
             else:
                 await message.answer(f"Клиент «{name} {last_name}» не найден.")
 
-            waiting_for_client_delete = False
+            await state.clear()
 
-    elif waiting_for_client_edit_name:
+    elif current_state == ClientFlow.waiting_for_edit_name.state:
         parts = message.text.split(maxsplit=1)
 
         if len(parts) < 2:
@@ -426,34 +406,44 @@ async def handle_client_text(message: Message):
             client = find_client_by_full_name(name, last_name)
 
             if client:
-                client_to_edit = client
-                waiting_for_client_edit_name = False
-                waiting_for_client_edit_field = True
+                await state.update_data(
+                    client_name=name,
+                    client_last_name=last_name,
+                )
+                await state.set_state(
+                    ClientFlow.waiting_for_edit_field
+                )
 
                 await message.answer(
                     "Что нужно изменить?",
                     reply_markup=edit_fields_menu
                 )
             else:
-                waiting_for_client_edit_name = False
+                await state.clear()
 
                 await message.answer(f"Клиент «{name} {last_name}» не найден.")
 
-    elif waiting_for_client_edit_field:
+    elif current_state == ClientFlow.waiting_for_edit_field.state:
         field_name = message.text
         field_key = get_field_key(field_name)
 
         if field_key:
-            field_to_edit = field_key
-            waiting_for_client_edit_field = False
-            waiting_for_client_edit_value = True
+            await state.update_data(field_to_edit=field_key)
+            await state.set_state(
+                ClientFlow.waiting_for_edit_value
+            )
 
             await message.answer(f"Введите новое значение для поля «{field_name}»:")
         else:
             await message.answer("Такого поля нет. Выберите поле из меню.")
 
-    elif waiting_for_client_edit_value:
+    elif current_state == ClientFlow.waiting_for_edit_value.state:
         new_value = message.text
+        client_to_edit = find_client_by_full_name(
+            data.get("client_name", ""),
+            data.get("client_last_name", ""),
+        )
+        field_to_edit = data.get("field_to_edit", "")
 
         if client_to_edit:
             old_name = client_to_edit["name"]
@@ -503,11 +493,9 @@ async def handle_client_text(message: Message):
                 reply_markup=clients_menu
             )
 
-        waiting_for_client_edit_value = False
-        client_to_edit = {}
-        field_to_edit = ""
+        await state.clear()
 
-    elif waiting_for_client_search:
+    elif current_state == ClientFlow.waiting_for_search.state:
         search_text = message.text.lower()
         found_clients = []
 
@@ -517,7 +505,7 @@ async def handle_client_text(message: Message):
             if search_text in full_name:
                 found_clients.append(client)
 
-        waiting_for_client_search = False
+        await state.clear()
 
         if found_clients:
             await message.answer(

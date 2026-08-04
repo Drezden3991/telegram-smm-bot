@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from aiogram.filters import StateFilter
 
-from handlers import clients, content_plan, post_ideas, write_post
+from handlers import content_plan, post_ideas, write_post
 
 
 def make_plan():
@@ -661,8 +661,10 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.data["selected_ideas"], [])
         show_idea_selection.assert_awaited_once_with(
             message,
+            state,
             [],
             show_full_list=False,
+            post_ideas=[idea],
         )
 
     async def test_editing_plan_selects_idea_by_number(self):
@@ -697,8 +699,10 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
         show_idea_selection.assert_awaited_once_with(
             message,
+            state,
             [ideas[1]],
             show_full_list=False,
+            post_ideas=ideas,
         )
 
     async def test_idea_selection_shows_full_and_selected_lists(self):
@@ -707,6 +711,7 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
             "Пять ошибок при заказе кофе",
         ]
         message = FakeMessage("")
+        state = FakeState()
 
         with patch(
             "handlers.content_plan.load_post_ideas",
@@ -714,6 +719,7 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
         ):
             await content_plan.show_idea_selection(
                 message,
+                state,
                 [ideas[1]],
             )
 
@@ -834,7 +840,6 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
 class BackButtonRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_general_back_handlers_only_match_without_state(self):
         modules = (
-            clients,
             post_ideas,
             write_post,
             content_plan,
