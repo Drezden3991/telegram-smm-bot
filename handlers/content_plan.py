@@ -20,9 +20,10 @@ from openai.types.responses import (
 )
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from handlers.start import main_menu
+from models.content_plan import ContentPlanDay, SevenDayContentPlan
 
 
 router = Router()
@@ -61,22 +62,6 @@ CONTENT_PLAN_INSTRUCTIONS = (
     "Пиши на русском языке, конкретно и кратко. Не добавляй поля, которых нет "
     "в схеме, и не изменяй данные пользовательского брифа."
 )
-
-
-class ContentPlanDay(BaseModel):
-    day: int = Field(ge=1, le=7)
-    goal: str = Field(min_length=1, max_length=50)
-    topic: str = Field(min_length=1, max_length=90)
-    format: str = Field(min_length=1, max_length=30)
-    key_message: str = Field(min_length=1, max_length=120)
-    cta: str = Field(min_length=1, max_length=70)
-
-
-class SevenDayContentPlan(BaseModel):
-    days: list[ContentPlanDay] = Field(
-        min_length=7,
-        max_length=7,
-    )
 
 
 class ContentPlanGenerationError(Exception):
