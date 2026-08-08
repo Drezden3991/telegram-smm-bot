@@ -1,5 +1,3 @@
-import random
-
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -7,10 +5,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 from handlers.start import main_menu
+from services import post_ideas as post_ideas_service
+from storage import post_ideas as post_ideas_storage
 
 router = Router()
-
-POST_IDEAS_FILE = "post_ideas.txt"
 
 
 class AddPostIdea(StatesGroup):
@@ -45,62 +43,39 @@ post_ideas_menu = ReplyKeyboardMarkup(
 
 
 def load_post_ideas():
-    try:
-        with open(POST_IDEAS_FILE, "r", encoding="utf-8") as file:
-            return [line.strip() for line in file.readlines() if line.strip()]
-    except FileNotFoundError:
-        return []
+    return post_ideas_storage.load_post_ideas()
 
 
 def save_all_post_ideas(post_ideas):
-    with open(POST_IDEAS_FILE, "w", encoding="utf-8") as file:
-        for idea in post_ideas:
-            file.write(format_post_idea(idea) + "\n")
+    formatted_post_ideas = (
+        format_post_idea(idea)
+        for idea in post_ideas
+    )
+
+    post_ideas_storage.save_all_post_ideas(
+        formatted_post_ideas
+    )
 
 
 def format_post_idea(idea):
-    idea = idea.strip()
-
-    if not idea.startswith("💡"):
-        idea = "💡 " + idea
-
-    return idea
+    return post_ideas_service.format_post_idea(idea)
 
 
 def normalize_post_idea(idea):
-    idea = idea.strip().lower()
-
-    if idea.startswith("💡"):
-        idea = idea[1:].strip()
-
-    return idea
+    return post_ideas_service.normalize_post_idea(idea)
 
 
 def post_idea_exists(new_idea):
-    post_ideas = load_post_ideas()
-    new_idea = normalize_post_idea(new_idea)
-
-    for idea in post_ideas:
-        if normalize_post_idea(idea) == new_idea:
-            return True
-
-    return False
+    return post_ideas_service.post_idea_exists(
+        new_idea,
+        load_post_ideas(),
+    )
 
 
 def add_post_idea_to_file(idea):
     idea = format_post_idea(idea)
 
-    with open(POST_IDEAS_FILE, "a+", encoding="utf-8") as file:
-        file.seek(0, 2)
-
-        if file.tell() > 0:
-            file.seek(file.tell() - 1)
-            last_symbol = file.read(1)
-
-            if last_symbol != "\n":
-                file.write("\n")
-
-        file.write(idea + "\n")
+    post_ideas_storage.add_post_idea_to_file(idea)
 
 
 def format_post_ideas_list(post_ideas):
@@ -178,7 +153,9 @@ async def random_post_idea(message: Message):
         await message.answer("Список идей пока пуст.")
         return
 
-    idea = random.choice(post_ideas)
+    idea = post_ideas_service.choose_random_post_idea(
+        post_ideas
+    )
 
     await message.answer(idea)
 
@@ -246,19 +223,24 @@ async def delete_post_idea(message: Message, state: FSMContext):
 async def delete_post_idea_by_number(message: Message, state: FSMContext):
     post_ideas = load_post_ideas()
 
-    if not message.text.isdigit():
+    (
+        deletion_status,
+        deleted_idea,
+        remaining_post_ideas,
+    ) = post_ideas_service.prepare_post_idea_deletion(
+        post_ideas,
+        message.text,
+    )
+
+    if deletion_status == post_ideas_service.IDEA_NUMBER_NOT_DIGIT:
         await message.answer("Введите номер идеи числом.")
         return
 
-    idea_number = int(message.text)
-
-    if idea_number < 1 or idea_number > len(post_ideas):
+    if deletion_status == post_ideas_service.IDEA_NUMBER_NOT_FOUND:
         await message.answer("Идеи с таким номером нет.")
         return
 
-    deleted_idea = post_ideas.pop(idea_number - 1)
-
-    save_all_post_ideas(post_ideas)
+    save_all_post_ideas(remaining_post_ideas)
 
     await state.clear()
 
@@ -284,13 +266,10 @@ async def search_post_idea(message: Message, state: FSMContext):
 @router.message(SearchPostIdea.waiting_for_search_text)
 async def show_found_post_ideas(message: Message, state: FSMContext):
     post_ideas = load_post_ideas()
-    search_text = message.text.lower().strip()
-
-    found_ideas = []
-
-    for number, idea in enumerate(post_ideas, start=1):
-        if search_text in idea.lower():
-            found_ideas.append(f"{number}. {idea}")
+    found_ideas = post_ideas_service.find_post_ideas(
+        post_ideas,
+        message.text,
+    )
 
     await state.clear()
 
@@ -302,7 +281,11 @@ async def show_found_post_ideas(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        "🔍 Найденные идеи:\n\n" + "\n".join(found_ideas),
+        "🔍 Найденные идеи:\n\n"
+        + "\n".join(
+            f"{number}. {idea}"
+            for number, idea in found_ideas
+        ),
         reply_markup=post_ideas_menu
     )
 
@@ -327,25 +310,32 @@ async def edit_post_idea(message: Message, state: FSMContext):
 async def choose_post_idea_for_edit(message: Message, state: FSMContext):
     post_ideas = load_post_ideas()
 
-    if not message.text.isdigit():
+    (
+        selection_status,
+        idea_number,
+        selected_idea,
+    ) = post_ideas_service.select_post_idea_by_number(
+        post_ideas,
+        message.text,
+    )
+
+    if selection_status == post_ideas_service.IDEA_NUMBER_NOT_DIGIT:
         await message.answer("Введите номер идеи числом.")
         return
 
-    idea_number = int(message.text)
-
-    if idea_number < 1 or idea_number > len(post_ideas):
+    if selection_status == post_ideas_service.IDEA_NUMBER_NOT_FOUND:
         await message.answer("Идеи с таким номером нет.")
         return
 
     await state.update_data(
         idea_number=idea_number,
-        selected_idea=post_ideas[idea_number - 1],
+        selected_idea=selected_idea,
     )
 
     await state.set_state(EditPostIdea.waiting_for_new_idea_text)
 
     await message.answer(
-        f"Текущая идея:\n\n{post_ideas[idea_number - 1]}\n\n"
+        f"Текущая идея:\n\n{selected_idea}\n\n"
         "Введите новый текст идеи:"
     )
 
@@ -357,11 +347,10 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
     idea_number = data.get("idea_number")
     selected_idea = data.get("selected_idea")
 
-    if (
-        not isinstance(idea_number, int)
-        or idea_number < 1
-        or idea_number > len(post_ideas)
-        or post_ideas[idea_number - 1] != selected_idea
+    if not post_ideas_service.is_current_post_idea_selection(
+        post_ideas,
+        idea_number,
+        selected_idea,
     ):
         if not post_ideas:
             await state.clear()
@@ -384,13 +373,21 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
         return
 
     new_idea = message.text
+    duplicate_exists = post_idea_exists(new_idea)
+    (
+        edit_status,
+        formatted_idea,
+        updated_post_ideas,
+    ) = post_ideas_service.prepare_post_idea_edit(
+        post_ideas,
+        idea_number,
+        new_idea,
+        duplicate_exists,
+    )
 
-    old_idea = post_ideas[idea_number - 1]
-    post_ideas.pop(idea_number - 1)
+    save_all_post_ideas(updated_post_ideas)
 
-    if post_idea_exists(new_idea):
-        post_ideas.insert(idea_number - 1, old_idea)
-        save_all_post_ideas(post_ideas)
+    if edit_status == post_ideas_service.IDEA_DUPLICATE:
 
         await state.clear()
 
@@ -399,11 +396,6 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
             reply_markup=post_ideas_menu
         )
         return
-
-    formatted_idea = format_post_idea(new_idea)
-    post_ideas.insert(idea_number - 1, formatted_idea)
-
-    save_all_post_ideas(post_ideas)
 
     await state.clear()
 

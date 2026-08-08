@@ -5,6 +5,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 from handlers.start import main_menu
+from services import clients as clients_service
+from storage import clients as clients_storage
 
 
 router = Router()
@@ -57,80 +59,35 @@ edit_fields_menu = ReplyKeyboardMarkup(
 
 
 def load_clients():
-    try:
-        with open("clients.txt", "r", encoding="utf-8") as file:
-            for line in file:
-                line = line.strip()
-
-                if line:
-                    clients.append(create_client_from_line(line))
-    except FileNotFoundError:
-        pass
+    globals()["clients"] = clients_storage.load_clients()
 
 
 def save_clients():
-    with open("clients.txt", "w", encoding="utf-8") as file:
-        for client in clients:
-            file.write(create_line_from_client(client) + "\n")
+    clients_storage.save_clients(clients)
 
 
 def create_client_from_line(line):
-    parts = line.split(" | ")
-
-    if len(parts) == 6:
-        return {
-            "name": parts[0],
-            "last_name": parts[1],
-            "phone": parts[2],
-            "instagram": parts[3],
-            "email": parts[4],
-            "notes": parts[5],
-        }
-
-    if len(parts) == 5:
-        return {
-            "name": parts[0],
-            "last_name": "",
-            "phone": parts[1],
-            "instagram": parts[2],
-            "email": parts[3],
-            "notes": parts[4],
-        }
-
-    return {
-        "name": line,
-        "last_name": "",
-        "phone": "",
-        "instagram": "",
-        "email": "",
-        "notes": "",
-    }
+    return clients_storage.create_client_from_line(line)
 
 
 def create_line_from_client(client):
-    return (
-        f"{client['name']} | "
-        f"{client['last_name']} | "
-        f"{client['phone']} | "
-        f"{client['instagram']} | "
-        f"{client['email']} | "
-        f"{client['notes']}"
-    )
+    return clients_storage.create_line_from_client(client)
 
 
 def find_client_by_full_name(name, last_name):
-    for client in clients:
-        if (
-            client["name"].lower() == name.lower()
-            and client["last_name"].lower() == last_name.lower()
-        ):
-            return client
-
-    return None
+    return clients_service.find_client_by_full_name(
+        clients,
+        name,
+        last_name,
+    )
 
 
 def client_exists(name, last_name):
-    return find_client_by_full_name(name, last_name) is not None
+    return clients_service.client_exists(
+        clients,
+        name,
+        last_name,
+    )
 
 
 def format_client(client, number):
@@ -165,25 +122,7 @@ def format_clients_list(title, clients_list):
 
 
 def get_field_key(field_name):
-    if field_name == "Имя":
-        return "name"
-
-    if field_name == "Фамилия":
-        return "last_name"
-
-    if field_name == "Телефон":
-        return "phone"
-
-    if field_name == "Instagram":
-        return "instagram"
-
-    if field_name == "Email":
-        return "email"
-
-    if field_name == "Заметки":
-        return "notes"
-
-    return ""
+    return clients_service.get_field_key(field_name)
 
 
 load_clients()
