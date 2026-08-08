@@ -24,15 +24,17 @@ from pydantic import ValidationError
 
 from handlers.start import main_menu
 from models.content_plan import ContentPlanDay, SevenDayContentPlan
+from services import content_plan as content_plan_service
+from storage import clients as clients_storage
+from storage import content_plans as content_plans_storage
+from storage import post_ideas as post_ideas_storage
 
 
 router = Router()
 
-CONTENT_PLANS_FILE = "content_plans.txt"
-CLIENTS_FILE = "clients.txt"
-POST_IDEAS_FILE = "post_ideas.txt"
+CONTENT_PLANS_FILE = content_plans_storage.CONTENT_PLANS_FILE
 
-SEPARATOR = "-" * 40
+SEPARATOR = content_plans_storage.SEPARATOR
 
 OPENAI_MODEL = "gpt-5.6"
 OPENAI_REASONING_EFFORT: ReasoningEffort = "low"
@@ -104,120 +106,33 @@ content_plan_menu = ReplyKeyboardMarkup(
 
 
 def read_content_plans():
-    try:
-        with open(
-            CONTENT_PLANS_FILE,
-            "r",
-            encoding="utf-8",
-        ) as file:
-            content = file.read().strip()
-
-    except FileNotFoundError:
-        return []
-
-    if not content:
-        return []
-
-    content_plans = content.split(SEPARATOR)
-
-    return [
-        content_plan.strip()
-        for content_plan in content_plans
-        if content_plan.strip()
-    ]
+    return content_plans_storage.read_content_plans()
 
 
 def save_content_plans(content_plans):
-    with open(
-        CONTENT_PLANS_FILE,
-        "w",
-        encoding="utf-8",
-    ) as file:
-        for content_plan in content_plans:
-            file.write(content_plan.strip())
-            file.write("\n")
-            file.write(SEPARATOR)
-            file.write("\n")
+    content_plans_storage.save_content_plans(
+        content_plans
+    )
 
 
 def create_client_from_line(line):
-    parts = line.split(" | ")
-
-    if len(parts) == 6:
-        return {
-            "name": parts[0],
-            "last_name": parts[1],
-            "phone": parts[2],
-            "instagram": parts[3],
-            "email": parts[4],
-            "notes": parts[5],
-        }
-
-    if len(parts) == 5:
-        return {
-            "name": parts[0],
-            "last_name": "",
-            "phone": parts[1],
-            "instagram": parts[2],
-            "email": parts[3],
-            "notes": parts[4],
-        }
-
-    return {
-        "name": line,
-        "last_name": "",
-        "phone": "",
-        "instagram": "",
-        "email": "",
-        "notes": "",
-    }
+    return clients_storage.create_client_from_line(
+        line
+    )
 
 
 def load_clients():
-    loaded_clients = []
-
-    try:
-        with open(
-            CLIENTS_FILE,
-            "r",
-            encoding="utf-8",
-        ) as file:
-            for line in file:
-                line = line.strip()
-
-                if line:
-                    loaded_clients.append(
-                        create_client_from_line(line)
-                    )
-
-    except FileNotFoundError:
-        pass
-
-    return loaded_clients
+    return clients_storage.load_clients()
 
 
 def load_post_ideas():
-    try:
-        with open(
-            POST_IDEAS_FILE,
-            "r",
-            encoding="utf-8",
-        ) as file:
-            return [
-                line.strip()
-                for line in file
-                if line.strip()
-            ]
-
-    except FileNotFoundError:
-        return []
+    return post_ideas_storage.load_post_ideas()
 
 
 def get_client_full_name(client):
-    name = client.get("name", "").strip()
-    last_name = client.get("last_name", "").strip()
-
-    return f"{name} {last_name}".strip()
+    return content_plan_service.get_client_full_name(
+        client
+    )
 
 
 def create_clients_menu(clients):
@@ -248,14 +163,10 @@ def create_clients_menu(clients):
 
 
 def get_selected_client(message_text, clients):
-    for number, client in enumerate(clients, start=1):
-        full_name = get_client_full_name(client)
-        expected_text = f"{number}. {full_name}"
-
-        if message_text == expected_text:
-            return client
-
-    return None
+    return content_plan_service.get_selected_client(
+        message_text,
+        clients,
+    )
 
 
 def create_idea_button_text(
@@ -314,34 +225,15 @@ def get_selected_idea_number(
     message_text,
     ideas_count,
 ):
-    parts = message_text.split()
-
-    if len(parts) != 2:
-        return None
-
-    selection_mark, number_text = parts
-
-    if selection_mark not in ("▫️", "✅"):
-        return None
-
-    if not number_text.isdigit():
-        return None
-
-    number = int(number_text)
-
-    if number < 1 or number > ideas_count:
-        return None
-
-    return number
+    return content_plan_service.get_selected_idea_number(
+        message_text,
+        ideas_count,
+    )
 
 
 def format_numbered_ideas(post_ideas):
-    return "\n".join(
-        f"{number}. {idea}"
-        for number, idea in enumerate(
-            post_ideas,
-            start=1,
-        )
+    return content_plan_service.format_numbered_ideas(
+        post_ideas
     )
 
 
@@ -349,20 +241,9 @@ def format_selected_ideas(
     post_ideas,
     selected_ideas,
 ):
-    selected_lines = [
-        f"{number}. {idea}"
-        for number, idea in enumerate(
-            post_ideas,
-            start=1,
-        )
-        if idea in selected_ideas
-    ]
-
-    if not selected_lines:
-        return "✅ Выбрано:\n\nПока ничего не выбрано."
-
-    return "✅ Выбрано:\n\n" + "\n".join(
-        selected_lines
+    return content_plan_service.format_selected_ideas(
+        post_ideas,
+        selected_ideas,
     )
 
 

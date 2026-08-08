@@ -1,5 +1,3 @@
-import json
-
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -7,13 +5,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from handlers.start import main_menu
+from services import write_post as write_post_service
+from storage import clients as clients_storage
+from storage import post_ideas as post_ideas_storage
+from storage import posts as posts_storage
 
 
 router = Router()
-
-POSTS_FILE = "posts.txt"
-CLIENTS_FILE = "clients.txt"
-IDEAS_FILE = "post_ideas.txt"
 
 WITHOUT_CLIENT_BUTTON = "🚫 Без клиента"
 CUSTOM_TOPIC_BUTTON = "✍️ Своя тема"
@@ -61,134 +59,40 @@ style_menu = ReplyKeyboardMarkup(
 
 
 def load_posts():
-    try:
-        with open(POSTS_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-
-            if isinstance(data, list):
-                return data
-
-            return []
-
-    except FileNotFoundError:
-        return []
-
-    except json.JSONDecodeError:
-        return []
+    return posts_storage.load_posts()
 
 
 def save_posts(posts):
-    with open(POSTS_FILE, "w", encoding="utf-8") as file:
-        json.dump(
-            posts,
-            file,
-            ensure_ascii=False,
-            indent=4,
-        )
+    posts_storage.save_posts(posts)
 
 
 def get_next_post_id(posts):
-    if not posts:
-        return 1
-
-    existing_ids = [
-        post.get("id", 0)
-        for post in posts
-        if isinstance(post.get("id"), int)
-    ]
-
-    if not existing_ids:
-        return 1
-
-    return max(existing_ids) + 1
+    return write_post_service.get_next_post_id(posts)
 
 
 def create_client_from_line(line):
-    parts = line.split(" | ")
-
-    if len(parts) == 6:
-        return {
-            "name": parts[0],
-            "last_name": parts[1],
-            "phone": parts[2],
-            "instagram": parts[3],
-            "email": parts[4],
-            "notes": parts[5],
-        }
-
-    if len(parts) == 5:
-        return {
-            "name": parts[0],
-            "last_name": "",
-            "phone": parts[1],
-            "instagram": parts[2],
-            "email": parts[3],
-            "notes": parts[4],
-        }
-
-    return {
-        "name": line,
-        "last_name": "",
-        "phone": "",
-        "instagram": "",
-        "email": "",
-        "notes": "",
-    }
+    return clients_storage.create_client_from_line(line)
 
 
 def load_clients():
-    loaded_clients = []
-
-    try:
-        with open(CLIENTS_FILE, "r", encoding="utf-8") as file:
-            for line in file:
-                line = line.strip()
-
-                if line:
-                    loaded_clients.append(
-                        create_client_from_line(line)
-                    )
-
-    except FileNotFoundError:
-        pass
-
-    return loaded_clients
+    return clients_storage.load_clients()
 
 
 def load_ideas():
-    ideas = []
+    ideas = post_ideas_storage.load_post_ideas()
 
-    try:
-        with open(IDEAS_FILE, "r", encoding="utf-8") as file:
-            for line in file:
-                idea = line.strip()
-
-                if not idea:
-                    continue
-
-                if BACK_BUTTON in idea:
-                    continue
-
-                ideas.append(idea)
-
-    except FileNotFoundError:
-        pass
-
-    return ideas
+    return write_post_service.filter_ideas(
+        ideas,
+        BACK_BUTTON,
+    )
 
 
 def get_client_full_name(client):
-    name = client.get("name", "").strip()
-    last_name = client.get("last_name", "").strip()
-
-    return f"{name} {last_name}".strip()
+    return write_post_service.get_client_full_name(client)
 
 
 def clean_idea_text(idea):
-    if idea.startswith("💡 "):
-        return idea[2:].strip()
-
-    return idea.strip()
+    return write_post_service.clean_idea_text(idea)
 
 
 def create_numbered_buttons(items):
@@ -245,64 +149,17 @@ def create_ideas_menu(ideas):
 
 
 def get_selected_item(message_text, items):
-    for number, item in enumerate(items, start=1):
-        expected_text = f"{number}. {item}"
-
-        if message_text == expected_text:
-            return number - 1
-
-    return None
+    return write_post_service.get_selected_item(
+        items,
+        message_text,
+    )
 
 
 def create_post_text(client_name, topic, style):
-    if client_name:
-        client_text = client_name
-    else:
-        client_text = "вашего проекта"
-
-    if style == "Экспертный":
-        return (
-            f"📝 Пост для: {client_text}\n\n"
-            f"Тема: {topic}\n\n"
-            "Сегодня важно говорить не просто о продукте, "
-            "а о пользе, которую он даёт клиенту.\n\n"
-            f"{topic} — это тема, которая помогает показать "
-            "экспертность, раскрыть ценность услуги и объяснить "
-            "аудитории, почему ей стоит обратить внимание именно сейчас.\n\n"
-            "Хороший SMM начинается не с красивой картинки, "
-            "а с понимания боли клиента и сильного сообщения."
-        )
-
-    if style == "Продающий":
-        return (
-            f"📝 Пост для: {client_text}\n\n"
-            f"Тема: {topic}\n\n"
-            "Если вы давно думали об этом, сейчас хороший момент начать.\n\n"
-            f"{topic} помогает решить конкретную задачу клиента "
-            "и сделать первый шаг к результату.\n\n"
-            "Напишите нам, если хотите узнать больше "
-            "или подобрать решение под вашу ситуацию."
-        )
-
-    if style == "Дружелюбный":
-        return (
-            f"📝 Пост для: {client_text}\n\n"
-            f"Тема: {topic}\n\n"
-            f"Давайте поговорим о теме: {topic}.\n\n"
-            "Это может казаться простой вещью, но именно из таких деталей "
-            "часто складывается доверие, интерес и желание узнать больше.\n\n"
-            "А как вы относитесь к этой теме?"
-        )
-
-    return (
-        f"📝 Пост для: {client_text}\n\n"
-        f"Тема: {topic}\n\n"
-        f"{topic} — важная тема для продвижения "
-        "и общения с аудиторией.\n\n"
-        "Она помогает рассказать о продукте, показать пользу "
-        "и объяснить, почему это может быть актуально для клиента.\n\n"
-        "Регулярный контент помогает бренду оставаться "
-        "заметным и понятным для своей аудитории."
+    return write_post_service.create_post_text(
+        client_name,
+        topic,
+        style,
     )
 
 
@@ -572,26 +429,14 @@ async def create_post(
         await show_topic_selection(message)
         return
 
-    posts = load_posts()
-    post_id = get_next_post_id(posts)
-
-    post_text = create_post_text(
+    post = write_post_service.create_and_save_post(
         client_name,
+        client_context,
         topic,
         style,
     )
-
-    post = {
-        "id": post_id,
-        "client": client_name,
-        "client_context": client_context,
-        "topic": topic,
-        "style": style,
-        "text": post_text,
-    }
-
-    posts.append(post)
-    save_posts(posts)
+    post_id = post["id"]
+    post_text = post["text"]
 
     await state.clear()
 
@@ -614,7 +459,7 @@ async def post_history(message: Message):
         )
         return
 
-    last_posts = posts[-10:]
+    last_posts = write_post_service.get_last_posts(posts)
 
     result = "📋 Последние посты:\n\n"
 
@@ -670,23 +515,11 @@ async def get_search_result(
     message: Message,
     state: FSMContext,
 ):
-    query = message.text.lower().strip()
     posts = load_posts()
-    found_posts = []
-
-    for post in posts:
-        client = str(post.get("client", "")).lower()
-        topic = str(post.get("topic", "")).lower()
-        style = str(post.get("style", "")).lower()
-        text = str(post.get("text", "")).lower()
-
-        if (
-            query in client
-            or query in topic
-            or query in style
-            or query in text
-        ):
-            found_posts.append(post)
+    found_posts = write_post_service.find_posts(
+        posts,
+        message.text,
+    )
 
     await state.clear()
 
@@ -774,22 +607,15 @@ async def get_delete_id(
         return
 
     post_id = int(post_id_text)
-    posts = load_posts()
+    post_was_deleted, _ = write_post_service.delete_post(post_id)
 
-    updated_posts = [
-        post
-        for post in posts
-        if post.get("id") != post_id
-    ]
-
-    if len(updated_posts) == len(posts):
+    if not post_was_deleted:
         await message.answer(
             "Пост с таким ID не найден. "
             "Попробуй ещё раз или нажми «Назад»:"
         )
         return
 
-    save_posts(updated_posts)
     await state.clear()
 
     await message.answer(

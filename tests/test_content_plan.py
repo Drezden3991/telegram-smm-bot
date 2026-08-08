@@ -1,4 +1,7 @@
+import tempfile
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -81,6 +84,456 @@ def get_state_filter(router, callback):
         for filter_object in handler.filters
         if isinstance(filter_object.callback, StateFilter)
     )
+
+
+class ContentPlanStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+
+        self.content_plans_file = Path(
+            self.temporary_directory.name
+        ) / "content_plans.txt"
+
+        self.file_patches = ExitStack()
+        self.addCleanup(self.file_patches.close)
+        self.file_patches.enter_context(
+            patch.object(
+                content_plan,
+                "CONTENT_PLANS_FILE",
+                str(self.content_plans_file),
+            )
+        )
+
+        storage_module = getattr(
+            content_plan,
+            "content_plans_storage",
+            None,
+        )
+
+        if storage_module is not None:
+            self.file_patches.enter_context(
+                patch.object(
+                    storage_module,
+                    "CONTENT_PLANS_FILE",
+                    str(self.content_plans_file),
+                )
+            )
+
+    def test_read_returns_empty_for_missing_file(self):
+        self.assertEqual(content_plan.read_content_plans(), [])
+
+    def test_read_returns_empty_for_empty_file(self):
+        self.content_plans_file.write_text("", encoding="utf-8")
+
+        self.assertEqual(content_plan.read_content_plans(), [])
+
+    def test_read_returns_empty_for_whitespace_only_file(self):
+        self.content_plans_file.write_text(
+            "  \n\t\n  ",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(content_plan.read_content_plans(), [])
+
+    def test_read_multiple_plans_separated_by_separator(self):
+        separator = content_plan.SEPARATOR
+        self.content_plans_file.write_text(
+            f"План 1\n{separator}\nПлан 2\n{separator}\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            content_plan.read_content_plans(),
+            ["План 1", "План 2"],
+        )
+
+    def test_read_ignores_empty_fragments(self):
+        separator = content_plan.SEPARATOR
+        self.content_plans_file.write_text(
+            (
+                f"{separator}\n"
+                f"План 1\n{separator}\n"
+                f"{separator}\n"
+                f"План 2\n{separator}\n"
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            content_plan.read_content_plans(),
+            ["План 1", "План 2"],
+        )
+
+    def test_save_uses_exact_forty_hyphen_separator(self):
+        content_plan.save_content_plans(["План"])
+
+        separator = "-" * 40
+        self.assertEqual(content_plan.SEPARATOR, separator)
+        self.assertEqual(
+            self.content_plans_file.read_text(encoding="utf-8"),
+            f"План\n{separator}\n",
+        )
+
+    def test_save_strips_outer_whitespace_from_each_plan(self):
+        content_plan.save_content_plans(
+            [" \nПлан 1\n ", "\tПлан 2\t"]
+        )
+
+        separator = content_plan.SEPARATOR
+        self.assertEqual(
+            self.content_plans_file.read_text(encoding="utf-8"),
+            (
+                f"План 1\n{separator}\n"
+                f"План 2\n{separator}\n"
+            ),
+        )
+
+    def test_save_adds_trailing_separator_after_last_plan(self):
+        content_plan.save_content_plans(["Последний план"])
+
+        saved_content = self.content_plans_file.read_text(
+            encoding="utf-8"
+        )
+        self.assertTrue(
+            saved_content.endswith(
+                f"{content_plan.SEPARATOR}\n"
+            )
+        )
+
+    def test_save_empty_list_clears_file(self):
+        self.content_plans_file.write_text(
+            "Старые данные",
+            encoding="utf-8",
+        )
+
+        content_plan.save_content_plans([])
+
+        self.assertEqual(
+            self.content_plans_file.read_text(encoding="utf-8"),
+            "",
+        )
+
+    def test_saved_plans_can_be_read_without_changes(self):
+        plans = [
+            "План 1\nВторая строка",
+            "План 2\nЕщё одна строка",
+        ]
+
+        content_plan.save_content_plans(plans)
+
+        self.assertEqual(
+            content_plan.read_content_plans(),
+            plans,
+        )
+
+
+class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+
+        temporary_path = Path(self.temporary_directory.name)
+        self.clients_file = temporary_path / "clients.txt"
+        self.post_ideas_file = temporary_path / "post_ideas.txt"
+
+        self.file_patches = ExitStack()
+        self.addCleanup(self.file_patches.close)
+
+        self._patch_file_path(
+            "CLIENTS_FILE",
+            "clients_storage",
+            self.clients_file,
+        )
+        self._patch_file_path(
+            "POST_IDEAS_FILE",
+            "post_ideas_storage",
+            self.post_ideas_file,
+        )
+
+    def _patch_file_path(
+        self,
+        handler_attribute,
+        storage_attribute,
+        file_path,
+    ):
+        if hasattr(content_plan, handler_attribute):
+            self.file_patches.enter_context(
+                patch.object(
+                    content_plan,
+                    handler_attribute,
+                    str(file_path),
+                )
+            )
+
+        storage_module = getattr(
+            content_plan,
+            storage_attribute,
+            None,
+        )
+
+        if storage_module is not None:
+            self.file_patches.enter_context(
+                patch.object(
+                    storage_module,
+                    handler_attribute,
+                    str(file_path),
+                )
+            )
+
+    def test_create_client_from_current_six_field_format(self):
+        client = content_plan.create_client_from_line(
+            "Иван | Иванов | +372 | @ivan | "
+            "ivan@example.com | Постоянный клиент"
+        )
+
+        self.assertEqual(
+            client,
+            {
+                "name": "Иван",
+                "last_name": "Иванов",
+                "phone": "+372",
+                "instagram": "@ivan",
+                "email": "ivan@example.com",
+                "notes": "Постоянный клиент",
+            },
+        )
+
+    def test_create_client_from_legacy_five_field_format(self):
+        client = content_plan.create_client_from_line(
+            "Анна | +372 | @anna | "
+            "anna@example.com | Старый формат"
+        )
+
+        self.assertEqual(
+            client,
+            {
+                "name": "Анна",
+                "last_name": "",
+                "phone": "+372",
+                "instagram": "@anna",
+                "email": "anna@example.com",
+                "notes": "Старый формат",
+            },
+        )
+
+    def test_load_clients_preserves_current_file_behavior(self):
+        self.clients_file.write_text(
+            (
+                "Иван | Иванов | +372 | @ivan | "
+                "ivan@example.com | Новый формат\n"
+                "Анна | +371 | @anna | "
+                "anna@example.com | Старый формат\n"
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            content_plan.load_clients(),
+            [
+                {
+                    "name": "Иван",
+                    "last_name": "Иванов",
+                    "phone": "+372",
+                    "instagram": "@ivan",
+                    "email": "ivan@example.com",
+                    "notes": "Новый формат",
+                },
+                {
+                    "name": "Анна",
+                    "last_name": "",
+                    "phone": "+371",
+                    "instagram": "@anna",
+                    "email": "anna@example.com",
+                    "notes": "Старый формат",
+                },
+            ],
+        )
+
+    def test_load_clients_returns_empty_for_missing_file(self):
+        self.assertEqual(content_plan.load_clients(), [])
+
+    def test_load_clients_skips_blank_lines(self):
+        self.clients_file.write_text(
+            (
+                "\n   \n"
+                "Иван | Иванов | +372 | @ivan | "
+                "ivan@example.com | Заметка\n"
+                "\t\n"
+            ),
+            encoding="utf-8",
+        )
+
+        loaded_clients = content_plan.load_clients()
+
+        self.assertEqual(len(loaded_clients), 1)
+        self.assertEqual(loaded_clients[0]["name"], "Иван")
+
+    def test_load_post_ideas_preserves_current_line_format(self):
+        self.post_ideas_file.write_text(
+            "  💡 Первая идея  \nВторая идея\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            content_plan.load_post_ideas(),
+            ["💡 Первая идея", "Вторая идея"],
+        )
+
+    def test_load_post_ideas_returns_empty_for_missing_file(self):
+        self.assertEqual(content_plan.load_post_ideas(), [])
+
+    def test_load_post_ideas_skips_blank_lines(self):
+        self.post_ideas_file.write_text(
+            "\n   \nИдея\n\t\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            content_plan.load_post_ideas(),
+            ["Идея"],
+        )
+
+
+class ContentPlanSelectionAndFormattingTests(unittest.TestCase):
+    def test_get_client_full_name_strips_and_joins_parts(self):
+        client = {
+            "name": "  Иван  ",
+            "last_name": "  Иванов  ",
+        }
+
+        self.assertEqual(
+            content_plan.get_client_full_name(client),
+            "Иван Иванов",
+        )
+
+    def test_get_client_full_name_handles_empty_data(self):
+        self.assertEqual(
+            content_plan.get_client_full_name({}),
+            "",
+        )
+        self.assertEqual(
+            content_plan.get_client_full_name(
+                {"name": "", "last_name": "  Петров  "}
+            ),
+            "Петров",
+        )
+
+    def test_get_selected_client_returns_exact_numbered_match(self):
+        clients = [
+            {"name": "Анна", "last_name": "Смирнова"},
+            {"name": "Иван", "last_name": "Иванов"},
+        ]
+
+        selected_client = content_plan.get_selected_client(
+            "2. Иван Иванов",
+            clients,
+        )
+
+        self.assertIs(selected_client, clients[1])
+
+    def test_get_selected_client_rejects_nonexact_or_empty_choice(self):
+        clients = [
+            {"name": "Иван", "last_name": "Иванов"},
+        ]
+
+        self.assertIsNone(
+            content_plan.get_selected_client(
+                "1. иван иванов",
+                clients,
+            )
+        )
+        self.assertIsNone(
+            content_plan.get_selected_client(
+                "1. Иван Иванов",
+                [],
+            )
+        )
+
+    def test_get_selected_idea_number_accepts_current_button_marks(self):
+        self.assertEqual(
+            content_plan.get_selected_idea_number("▫️ 2", 3),
+            2,
+        )
+        self.assertEqual(
+            content_plan.get_selected_idea_number("✅ 3", 3),
+            3,
+        )
+
+    def test_get_selected_idea_number_rejects_invalid_choices(self):
+        invalid_choices = (
+            "",
+            "2",
+            "🔹 2",
+            "▫️ два",
+            "▫️ 0",
+            "▫️ 4",
+        )
+
+        for choice in invalid_choices:
+            with self.subTest(choice=choice):
+                self.assertIsNone(
+                    content_plan.get_selected_idea_number(
+                        choice,
+                        3,
+                    )
+                )
+
+    def test_format_numbered_ideas_preserves_order_and_numbering(self):
+        result = content_plan.format_numbered_ideas(
+            ["Первая идея", "Вторая идея", "Третья идея"]
+        )
+
+        self.assertEqual(
+            result,
+            (
+                "1. Первая идея\n"
+                "2. Вторая идея\n"
+                "3. Третья идея"
+            ),
+        )
+
+    def test_format_numbered_ideas_returns_empty_string_for_empty_list(self):
+        self.assertEqual(
+            content_plan.format_numbered_ideas([]),
+            "",
+        )
+
+    def test_format_selected_ideas_uses_source_order_and_numbers(self):
+        result = content_plan.format_selected_ideas(
+            ["Первая идея", "Вторая идея", "Третья идея"],
+            ["Третья идея", "Первая идея"],
+        )
+
+        self.assertEqual(
+            result,
+            (
+                "✅ Выбрано:\n\n"
+                "1. Первая идея\n"
+                "3. Третья идея"
+            ),
+        )
+
+    def test_format_selected_ideas_uses_empty_selection_text(self):
+        expected_text = (
+            "✅ Выбрано:\n\n"
+            "Пока ничего не выбрано."
+        )
+
+        self.assertEqual(
+            content_plan.format_selected_ideas(
+                ["Первая идея"],
+                [],
+            ),
+            expected_text,
+        )
+        self.assertEqual(
+            content_plan.format_selected_ideas(
+                ["Первая идея"],
+                ["Отсутствующая идея"],
+            ),
+            expected_text,
+        )
 
 
 class ContentPlanTests(unittest.TestCase):
