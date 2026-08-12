@@ -3,6 +3,31 @@ from models.post import Post
 from storage import posts as posts_storage
 
 
+class WritePostGenerationError(Exception):
+    pass
+
+
+WRITE_POST_AI_CONTRACT = (
+    "Ты опытный SMM-копирайтер для Telegram. Напиши один готовый "
+    "SMM-пост на русском языке по переданным безопасному контексту "
+    "клиента, теме и стилю. Учитывай выбранный стиль: Экспертный, "
+    "Продающий, Дружелюбный или Информационный.\n\n"
+    "ПОДТВЕРЖДЁННЫЕ ФАКТЫ О КЛИЕНТЕ — это только сведения, явно "
+    "указанные во входном контексте. Не выдумывай и не приписывай "
+    "клиенту цены, скидки, акции, промокоды, адреса, контакты, часы "
+    "работы, товары, услуги, инфраструктуру, отзывы, награды, "
+    "сертификаты, цифры и другие конкретные бизнес-факты, если их нет "
+    "во входных данных.\n\n"
+    "ОБЩИЕ ЗНАНИЯ допустимы только как нейтральный контент; не "
+    "превращай их в утверждения о конкретном клиенте. Если данных "
+    "недостаточно, пиши нейтрально, а не достраивай детали. Избегай "
+    "ложных утверждений от имени бизнеса. В безопасном контексте нет "
+    "телефона и email: не добавляй их в текст.\n\n"
+    "Верни только готовый черновик поста для SMM-специалиста: без "
+    "технических комментариев, объяснений процесса и JSON."
+)
+
+
 def get_next_post_id(posts: list[Post]) -> int:
     if not posts:
         return 1
@@ -24,6 +49,35 @@ def get_client_full_name(client: Client) -> str:
     last_name = client.get("last_name", "").strip()
 
     return f"{name} {last_name}".strip()
+
+
+def build_client_ai_context(client: Client | None) -> str:
+    if not client:
+        return ""
+
+    context_parts = []
+    full_name = get_client_full_name(client)
+
+    if full_name:
+        context_parts.append(
+            f"Название или имя клиента: {full_name}"
+        )
+
+    instagram = client.get("instagram", "").strip()
+
+    if instagram and instagram != "-":
+        context_parts.append(
+            f"Instagram клиента: {instagram}"
+        )
+
+    notes = client.get("notes", "").strip()
+
+    if notes and notes != "-":
+        context_parts.append(
+            f"Информация о клиенте: {notes}"
+        )
+
+    return "\n".join(context_parts)
 
 
 def clean_idea_text(idea: str) -> str:
@@ -119,13 +173,16 @@ def build_post(
     client_context: Client | None,
     topic: str,
     style: str,
+    text: str | None = None,
 ) -> Post:
     post_id = get_next_post_id(posts)
-    post_text = create_post_text(
-        client_name,
-        topic,
-        style,
-    )
+
+    if text is None:
+        text = create_post_text(
+            client_name,
+            topic,
+            style,
+        )
 
     return {
         "id": post_id,
@@ -133,7 +190,7 @@ def build_post(
         "client_context": client_context,
         "topic": topic,
         "style": style,
-        "text": post_text,
+        "text": text,
     }
 
 
@@ -150,6 +207,109 @@ def create_and_save_post(
         client_context,
         topic,
         style,
+    )
+
+    posts.append(post)
+    posts_storage.save_posts(posts)
+
+    return post
+
+
+def create_and_save_gemini_post(
+    client_name: str,
+    client_context: Client | None,
+    topic: str,
+    style: str,
+) -> Post:
+    from services import write_post_gemini
+
+    client_ai_context = build_client_ai_context(
+        client_context
+    )
+    generated_text = (
+        write_post_gemini.generate_gemini_post(
+            client_ai_context,
+            topic,
+            style,
+        )
+    )
+
+    posts = posts_storage.load_posts()
+    post = build_post(
+        posts,
+        client_name,
+        client_context,
+        topic,
+        style,
+        text=generated_text,
+    )
+
+    posts.append(post)
+    posts_storage.save_posts(posts)
+
+    return post
+
+
+def create_and_save_openai_post(
+    client_name: str,
+    client_context: Client | None,
+    topic: str,
+    style: str,
+) -> Post:
+    from services import write_post_openai
+
+    client_ai_context = build_client_ai_context(
+        client_context
+    )
+    generated_text = (
+        write_post_openai.generate_openai_post(
+            client_ai_context,
+            topic,
+            style,
+        )
+    )
+
+    posts = posts_storage.load_posts()
+    post = build_post(
+        posts,
+        client_name,
+        client_context,
+        topic,
+        style,
+        text=generated_text,
+    )
+
+    posts.append(post)
+    posts_storage.save_posts(posts)
+
+    return post
+
+
+def create_and_save_groq_post(
+    client_name: str,
+    client_context: Client | None,
+    topic: str,
+    style: str,
+) -> Post:
+    from services import write_post_groq
+
+    client_ai_context = build_client_ai_context(
+        client_context
+    )
+    generated_text = write_post_groq.generate_groq_post(
+        client_ai_context,
+        topic,
+        style,
+    )
+
+    posts = posts_storage.load_posts()
+    post = build_post(
+        posts,
+        client_name,
+        client_context,
+        topic,
+        style,
+        text=generated_text,
     )
 
     posts.append(post)

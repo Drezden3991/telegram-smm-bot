@@ -6,13 +6,9 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 from handlers.start import main_menu
 from services import clients as clients_service
-from storage import clients as clients_storage
 
 
 router = Router()
-
-
-clients = []
 
 
 class ClientFlow(StatesGroup):
@@ -59,32 +55,18 @@ edit_fields_menu = ReplyKeyboardMarkup(
 
 
 def load_clients():
-    globals()["clients"] = clients_storage.load_clients()
-
-
-def save_clients():
-    clients_storage.save_clients(clients)
-
-
-def create_client_from_line(line):
-    return clients_storage.create_client_from_line(line)
-
-
-def create_line_from_client(client):
-    return clients_storage.create_line_from_client(client)
+    return clients_service.load_clients()
 
 
 def find_client_by_full_name(name, last_name):
-    return clients_service.find_client_by_full_name(
-        clients,
+    return clients_service.get_client_by_full_name(
         name,
         last_name,
     )
 
 
 def client_exists(name, last_name):
-    return clients_service.client_exists(
-        clients,
+    return clients_service.current_client_exists(
         name,
         last_name,
     )
@@ -125,9 +107,6 @@ def get_field_key(field_name):
     return clients_service.get_field_key(field_name)
 
 
-load_clients()
-
-
 @router.message(F.text == "👥 Клиенты")
 async def open_clients_menu(
     message: Message,
@@ -159,6 +138,7 @@ async def show_clients(
     state: FSMContext,
 ):
     await state.clear()
+    clients = load_clients()
 
     if clients:
         await message.answer(format_clients_list("📋 Список клиентов:", clients))
@@ -288,14 +268,18 @@ async def handle_client_text(
         new_client = data.get("new_client", {})
         new_client["notes"] = message.text
 
-        clients.append(new_client)
-        save_clients()
+        creation_status = clients_service.create_client(
+            new_client
+        )
 
         full_name = f"{new_client['name']} {new_client['last_name']}"
 
         await state.clear()
 
-        await message.answer(f"✅ Клиент «{full_name}» добавлен.")
+        if creation_status == clients_service.CLIENT_DUPLICATE:
+            await message.answer("Такой клиент уже существует.")
+        else:
+            await message.answer(f"✅ Клиент «{full_name}» добавлен.")
 
     elif current_state == ClientFlow.waiting_for_card.state:
         parts = message.text.split(maxsplit=1)
@@ -322,12 +306,12 @@ async def handle_client_text(
         else:
             name = parts[0]
             last_name = parts[1]
-            client = find_client_by_full_name(name, last_name)
+            deletion_status = clients_service.delete_client(
+                name,
+                last_name,
+            )
 
-            if client:
-                clients.remove(client)
-                save_clients()
-
+            if deletion_status == clients_service.CLIENT_DELETED:
                 await message.answer(f"✅ Клиент «{name} {last_name}» удалён.")
             else:
                 await message.answer(f"Клиент «{name} {last_name}» не найден.")
@@ -378,71 +362,49 @@ async def handle_client_text(
 
     elif current_state == ClientFlow.waiting_for_edit_value.state:
         new_value = message.text
-        client_to_edit = find_client_by_full_name(
-            data.get("client_name", ""),
-            data.get("client_last_name", ""),
-        )
+        client_name = data.get("client_name", "")
+        client_last_name = data.get("client_last_name", "")
         field_to_edit = data.get("field_to_edit", "")
+        (
+            edit_status,
+            client_to_edit,
+        ) = clients_service.edit_client_field(
+            client_name,
+            client_last_name,
+            field_to_edit,
+            new_value,
+        )
 
-        if client_to_edit:
-            old_name = client_to_edit["name"]
-            old_last_name = client_to_edit["last_name"]
-
+        if edit_status == clients_service.CLIENT_DUPLICATE:
             if field_to_edit == "name":
-                if client_exists(new_value, old_last_name):
-                    await message.answer(
-                        f"Клиент «{new_value} {old_last_name}» уже существует.",
-                        reply_markup=clients_menu
-                    )
-                else:
-                    client_to_edit["name"] = new_value
-                    save_clients()
-
-                    await message.answer(
-                        "✅ Данные клиента обновлены.",
-                        reply_markup=clients_menu
-                    )
-
-            elif field_to_edit == "last_name":
-                if client_exists(old_name, new_value):
-                    await message.answer(
-                        f"Клиент «{old_name} {new_value}» уже существует.",
-                        reply_markup=clients_menu
-                    )
-                else:
-                    client_to_edit["last_name"] = new_value
-                    save_clients()
-
-                    await message.answer(
-                        "✅ Данные клиента обновлены.",
-                        reply_markup=clients_menu
-                    )
-
-            else:
-                client_to_edit[field_to_edit] = new_value
-                save_clients()
-
                 await message.answer(
-                    "✅ Данные клиента обновлены.",
+                    f"Клиент «{new_value} {client_to_edit['last_name']}» уже существует.",
                     reply_markup=clients_menu
                 )
-        else:
+            else:
+                await message.answer(
+                    f"Клиент «{client_to_edit['name']} {new_value}» уже существует.",
+                    reply_markup=clients_menu
+                )
+
+        elif edit_status == clients_service.CLIENT_NOT_FOUND:
             await message.answer(
                 "Клиент не найден.",
+                reply_markup=clients_menu
+            )
+
+        else:
+            await message.answer(
+                "✅ Данные клиента обновлены.",
                 reply_markup=clients_menu
             )
 
         await state.clear()
 
     elif current_state == ClientFlow.waiting_for_search.state:
-        search_text = message.text.lower()
-        found_clients = []
-
-        for client in clients:
-            full_name = f"{client['name']} {client['last_name']}".lower()
-
-            if search_text in full_name:
-                found_clients.append(client)
+        found_clients = clients_service.search_clients(
+            message.text
+        )
 
         await state.clear()
 

@@ -121,26 +121,29 @@ class PostIdeasBackTests(unittest.IsolatedAsyncioTestCase):
             },
             state=post_ideas.EditPostIdea.waiting_for_new_idea_text,
         )
-        save_all_post_ideas = Mock()
+        edit_post_idea = Mock(
+            return_value=(
+                post_ideas.post_ideas_service.IDEA_SELECTION_STALE,
+                None,
+                ["💡 Оставшаяся идея"],
+            )
+        )
 
-        with (
-            patch.object(
-                post_ideas,
-                "load_post_ideas",
-                return_value=["💡 Оставшаяся идея"],
-            ),
-            patch.object(
-                post_ideas,
-                "save_all_post_ideas",
-                save_all_post_ideas,
-            ),
+        with patch.object(
+            post_ideas.post_ideas_service,
+            "edit_post_idea",
+            edit_post_idea,
         ):
             await post_ideas.save_edited_post_idea(
                 message,
                 state,
             )
 
-        save_all_post_ideas.assert_not_called()
+        edit_post_idea.assert_called_once_with(
+            2,
+            "💡 Удалённая идея",
+            "Новый текст",
+        )
         self.assertEqual(
             state.state,
             post_ideas.EditPostIdea.waiting_for_idea_number,
@@ -156,26 +159,29 @@ class PostIdeasBackTests(unittest.IsolatedAsyncioTestCase):
             },
             state=post_ideas.EditPostIdea.waiting_for_new_idea_text,
         )
-        save_all_post_ideas = Mock()
+        edit_post_idea = Mock(
+            return_value=(
+                post_ideas.post_ideas_service.IDEA_SELECTION_STALE,
+                None,
+                ["💡 Другая идея"],
+            )
+        )
 
-        with (
-            patch.object(
-                post_ideas,
-                "load_post_ideas",
-                return_value=["💡 Другая идея"],
-            ),
-            patch.object(
-                post_ideas,
-                "save_all_post_ideas",
-                save_all_post_ideas,
-            ),
+        with patch.object(
+            post_ideas.post_ideas_service,
+            "edit_post_idea",
+            edit_post_idea,
         ):
             await post_ideas.save_edited_post_idea(
                 message,
                 state,
             )
 
-        save_all_post_ideas.assert_not_called()
+        edit_post_idea.assert_called_once_with(
+            1,
+            "💡 Изначальная идея",
+            "Новый текст",
+        )
         self.assertEqual(
             state.state,
             post_ideas.EditPostIdea.waiting_for_idea_number,
@@ -185,11 +191,21 @@ class PostIdeasBackTests(unittest.IsolatedAsyncioTestCase):
 class ClientFsmTests(unittest.IsolatedAsyncioTestCase):
     async def test_client_creation_uses_fsm_until_completion(self):
         state = FakeState()
-        save_clients = Mock()
+        create_client = Mock(
+            return_value=clients.clients_service.CLIENT_CREATED
+        )
 
         with (
-            patch.object(clients, "clients", []),
-            patch.object(clients, "save_clients", save_clients),
+            patch.object(
+                clients,
+                "client_exists",
+                return_value=False,
+            ),
+            patch.object(
+                clients.clients_service,
+                "create_client",
+                create_client,
+            ),
         ):
             await clients.ask_client_name(
                 FakeMessage("➕ Добавить клиента"),
@@ -209,13 +225,16 @@ class ClientFsmTests(unittest.IsolatedAsyncioTestCase):
                     state,
                 )
 
-            self.assertEqual(len(clients.clients), 1)
-            self.assertEqual(
-                clients.clients[0]["name"],
-                "Анна",
-            )
-
-        save_clients.assert_called_once_with()
+        create_client.assert_called_once_with(
+            {
+                "name": "Анна",
+                "last_name": "Иванова",
+                "phone": "+372000000",
+                "instagram": "@anna",
+                "email": "anna@example.com",
+                "notes": "Тестовый клиент",
+            }
+        )
         self.assertTrue(state.cleared)
         self.assertEqual(state.data, {})
 
@@ -482,7 +501,7 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value="Новый план"),
             ),
             patch.object(
-                content_plan,
+                content_plan.content_plans_storage,
                 "save_content_plans",
                 save_content_plans,
             ),
@@ -531,7 +550,7 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value="Обновлённый план"),
             ),
             patch.object(
-                content_plan,
+                content_plan.content_plans_storage,
                 "save_content_plans",
                 save_content_plans,
             ),

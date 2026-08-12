@@ -6,6 +6,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 from handlers import write_post
+from services import write_post as write_post_service
+from storage import clients as clients_storage
+from storage import posts as posts_storage
 
 
 class FakeMessage:
@@ -35,34 +38,21 @@ class FakeState:
 
 @contextmanager
 def patch_post_persistence(posts):
-    service_storage = getattr(
-        write_post.write_post_service,
-        "posts_storage",
-        None,
-    )
     load_posts = Mock(return_value=posts)
     save_posts = Mock()
 
-    persistence_modules = [write_post]
-    if service_storage is not None:
-        persistence_modules.append(service_storage)
-
-    with ExitStack() as patches:
-        for persistence_module in persistence_modules:
-            patches.enter_context(
-                patch.object(
-                    persistence_module,
-                    "load_posts",
-                    load_posts,
-                )
-            )
-            patches.enter_context(
-                patch.object(
-                    persistence_module,
-                    "save_posts",
-                    save_posts,
-                )
-            )
+    with (
+        patch.object(
+            posts_storage,
+            "load_posts",
+            load_posts,
+        ),
+        patch.object(
+            posts_storage,
+            "save_posts",
+            save_posts,
+        ),
+    ):
 
         yield load_posts, save_posts
 
@@ -79,26 +69,16 @@ class WritePostStorageTests(unittest.TestCase):
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
 
-        if hasattr(write_post, "POSTS_FILE"):
-            self.file_patches.enter_context(
-                patch.object(
-                    write_post,
-                    "POSTS_FILE",
-                    str(self.posts_file),
-                )
+        self.file_patches.enter_context(
+            patch.object(
+                posts_storage,
+                "POSTS_FILE",
+                str(self.posts_file),
             )
-
-        if hasattr(write_post, "posts_storage"):
-            self.file_patches.enter_context(
-                patch.object(
-                    write_post.posts_storage,
-                    "POSTS_FILE",
-                    str(self.posts_file),
-                )
-            )
+        )
 
     def test_load_posts_returns_empty_for_missing_file(self):
-        self.assertEqual(write_post.load_posts(), [])
+        self.assertEqual(posts_storage.load_posts(), [])
 
     def test_load_posts_returns_empty_for_invalid_json(self):
         self.posts_file.write_text(
@@ -106,7 +86,7 @@ class WritePostStorageTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(write_post.load_posts(), [])
+        self.assertEqual(posts_storage.load_posts(), [])
 
     def test_load_posts_returns_empty_for_non_list_json(self):
         self.posts_file.write_text(
@@ -114,7 +94,7 @@ class WritePostStorageTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(write_post.load_posts(), [])
+        self.assertEqual(posts_storage.load_posts(), [])
 
     def test_load_posts_returns_json_list_without_changes(self):
         posts = [
@@ -132,7 +112,7 @@ class WritePostStorageTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(write_post.load_posts(), posts)
+        self.assertEqual(posts_storage.load_posts(), posts)
 
     def test_save_posts_uses_utf8_readable_indented_json(self):
         posts = [
@@ -143,7 +123,7 @@ class WritePostStorageTests(unittest.TestCase):
             }
         ]
 
-        write_post.save_posts(posts)
+        posts_storage.save_posts(posts)
 
         self.assertEqual(
             self.posts_file.read_text(encoding="utf-8"),
@@ -166,9 +146,9 @@ class WritePostStorageTests(unittest.TestCase):
             }
         ]
 
-        write_post.save_posts(posts)
+        posts_storage.save_posts(posts)
 
-        self.assertEqual(write_post.load_posts(), posts)
+        self.assertEqual(posts_storage.load_posts(), posts)
 
 
 class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
@@ -226,7 +206,7 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            write_post.create_client_from_line(line),
+            clients_storage.create_client_from_line(line),
             {
                 "name": "Иван",
                 "last_name": "Иванов",
@@ -244,7 +224,7 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            write_post.create_client_from_line(line),
+            clients_storage.create_client_from_line(line),
             {
                 "name": "Иван",
                 "last_name": "",
@@ -315,7 +295,7 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
 
 class WritePostIdTests(unittest.TestCase):
     def test_get_next_post_id_starts_with_one_for_empty_list(self):
-        self.assertEqual(write_post.get_next_post_id([]), 1)
+        self.assertEqual(write_post_service.get_next_post_id([]), 1)
 
     def test_get_next_post_id_uses_maximum_integer_id(self):
         posts = [
@@ -324,7 +304,7 @@ class WritePostIdTests(unittest.TestCase):
             {"id": 7},
         ]
 
-        self.assertEqual(write_post.get_next_post_id(posts), 11)
+        self.assertEqual(write_post_service.get_next_post_id(posts), 11)
 
     def test_get_next_post_id_ignores_missing_and_non_integer_ids(self):
         posts = [
@@ -334,7 +314,7 @@ class WritePostIdTests(unittest.TestCase):
             {"id": 4},
         ]
 
-        self.assertEqual(write_post.get_next_post_id(posts), 5)
+        self.assertEqual(write_post_service.get_next_post_id(posts), 5)
 
 
 class WritePostBusinessLogicTests(unittest.TestCase):
@@ -440,7 +420,7 @@ class WritePostBusinessLogicTests(unittest.TestCase):
         for style, expected in expected_by_style.items():
             with self.subTest(style=style):
                 self.assertEqual(
-                    write_post.create_post_text(
+                    write_post_service.create_post_text(
                         client_name,
                         topic,
                         style,
@@ -671,7 +651,7 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created_post["style"], "Экспертный")
         self.assertEqual(
             created_post["text"],
-            write_post.create_post_text(
+            write_post_service.create_post_text(
                 "Иван Иванов",
                 "Как выбрать кофе",
                 "Экспертный",

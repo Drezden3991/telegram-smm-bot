@@ -62,18 +62,6 @@ def load_posts():
     return posts_storage.load_posts()
 
 
-def save_posts(posts):
-    posts_storage.save_posts(posts)
-
-
-def get_next_post_id(posts):
-    return write_post_service.get_next_post_id(posts)
-
-
-def create_client_from_line(line):
-    return clients_storage.create_client_from_line(line)
-
-
 def load_clients():
     return clients_storage.load_clients()
 
@@ -152,14 +140,6 @@ def get_selected_item(message_text, items):
     return write_post_service.get_selected_item(
         items,
         message_text,
-    )
-
-
-def create_post_text(client_name, topic, style):
-    return write_post_service.create_post_text(
-        client_name,
-        topic,
-        style,
     )
 
 

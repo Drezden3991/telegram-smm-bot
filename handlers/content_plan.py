@@ -1,29 +1,10 @@
-import asyncio
-
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AuthenticationError,
-    OpenAI,
-    OpenAIError,
-    RateLimitError,
-)
-from openai.types.responses import (
-    EasyInputMessageParam,
-    ResponseInputParam,
-)
-from openai.types.shared.reasoning_effort import ReasoningEffort
-from openai.types.shared_params.reasoning import Reasoning
-from pydantic import ValidationError
 
 from handlers.start import main_menu
-from models.content_plan import ContentPlanDay, SevenDayContentPlan
 from services import content_plan as content_plan_service
 from storage import clients as clients_storage
 from storage import content_plans as content_plans_storage
@@ -32,18 +13,11 @@ from storage import post_ideas as post_ideas_storage
 
 router = Router()
 
-CONTENT_PLANS_FILE = content_plans_storage.CONTENT_PLANS_FILE
-
-SEPARATOR = content_plans_storage.SEPARATOR
-
-OPENAI_MODEL = "gpt-5.6"
-OPENAI_REASONING_EFFORT: ReasoningEffort = "low"
-OPENAI_TIMEOUT_SECONDS = 45.0
-
 MAX_BRIEF_LENGTH = 500
 TELEGRAM_MESSAGE_LIMIT = 4096
-CONTENT_PLAN_SHORT_TITLE_MAX_LENGTH = 80
-CONTENT_PLAN_CLIENT_TITLE_MAX_LENGTH = 30
+ContentPlanGenerationError = (
+    content_plan_service.ContentPlanGenerationError
+)
 
 WITHOUT_CLIENT_BUTTON = "🚫 Без клиента"
 SKIP_IDEAS_BUTTON = "⏭ Пропустить идеи"
@@ -51,24 +25,6 @@ FINISH_IDEAS_BUTTON = "✅ Готово"
 BACK_BUTTON = "⬅️ Назад"
 CONFIRM_DELETE_BUTTON = "✅ Да, удалить"
 CANCEL_DELETE_BUTTON = "❌ Отмена"
-
-CONTENT_PLAN_INSTRUCTIONS = (
-    "Ты опытный SMM-стратег для Telegram. Создай практичный контент-план "
-    "ровно на семь дней по пользовательскому брифу. Дни должны идти строго "
-    "от 1 до 7 без повторов. Для каждого дня сформулируй отдельные цель, тему, "
-    "формат публикации, ключевой тезис и призыв к действию. Соблюдай логику "
-    "прогрева: знакомство и польза в начале, доверие и работа с возражениями "
-    "в середине, целевое действие ближе к концу. Чередуй подходящие для Telegram "
-    "форматы. Если пользователь передал сохранённые идеи постов, используй их "
-    "как дополнительный контекст и органично распределяй подходящие идеи по дням. "
-    "Пиши на русском языке, конкретно и кратко. Не добавляй поля, которых нет "
-    "в схеме, и не изменяй данные пользовательского брифа."
-)
-
-
-class ContentPlanGenerationError(Exception):
-    pass
-
 
 class CreateContentPlan(StatesGroup):
     waiting_for_client = State()
@@ -107,18 +63,6 @@ content_plan_menu = ReplyKeyboardMarkup(
 
 def read_content_plans():
     return content_plans_storage.read_content_plans()
-
-
-def save_content_plans(content_plans):
-    content_plans_storage.save_content_plans(
-        content_plans
-    )
-
-
-def create_client_from_line(line):
-    return clients_storage.create_client_from_line(
-        line
-    )
 
 
 def load_clients():
@@ -247,333 +191,28 @@ def format_selected_ideas(
     )
 
 
-def build_client_ai_context(client):
-    if not client:
-        return ""
-
-    context_parts = []
-
-    full_name = get_client_full_name(client)
-
-    if full_name:
-        context_parts.append(
-            f"Название или имя клиента: {full_name}"
-        )
-
-    instagram = client.get("instagram", "").strip()
-
-    if instagram and instagram != "-":
-        context_parts.append(
-            f"Instagram клиента: {instagram}"
-        )
-
-    notes = client.get("notes", "").strip()
-
-    if notes and notes != "-":
-        context_parts.append(
-            f"Информация о клиенте: {notes}"
-        )
-
-    if not context_parts:
-        return ""
-
-    return "\n".join(context_parts)
-
-
-def build_ideas_ai_context(selected_ideas):
-    if not selected_ideas:
-        return ""
-
-    result = "Сохранённые идеи постов:\n"
-
-    for number, idea in enumerate(
-        selected_ideas,
-        start=1,
-    ):
-        result += f"{number}. {idea}\n"
-
-    return result.strip()
-
-
-def build_ai_brief(
-    client,
-    selected_ideas,
-    user_brief,
-):
-    brief_parts = []
-
-    client_context = build_client_ai_context(
-        client
-    )
-
-    ideas_context = build_ideas_ai_context(
-        selected_ideas
-    )
-
-    if client_context:
-        brief_parts.append(
-            "Карточка клиента:\n"
-            f"{client_context}"
-        )
-
-    if ideas_context:
-        brief_parts.append(ideas_context)
-
-    brief_parts.append(
-        "Задача пользователя:\n"
-        f"{user_brief}"
-    )
-
-    return "\n\n".join(brief_parts)
-
-
-def generate_ai_content_plan(brief):
-    try:
-        client = OpenAI(
-            timeout=OPENAI_TIMEOUT_SECONDS,
-            max_retries=1,
-        )
-
-        response_input: ResponseInputParam = [
-            EasyInputMessageParam(
-                role="developer",
-                content=CONTENT_PLAN_INSTRUCTIONS,
-            ),
-            EasyInputMessageParam(
-                role="user",
-                content=(
-                    "Краткий бриф пользователя:\n"
-                    f"{brief}"
-                ),
-            ),
-        ]
-
-        response = client.responses.parse(
-            model=OPENAI_MODEL,
-            reasoning=Reasoning(
-                effort=OPENAI_REASONING_EFFORT,
-            ),
-            input=response_input,
-            text_format=SevenDayContentPlan,
-        )
-
-    except AuthenticationError as error:
-        raise ContentPlanGenerationError(
-            "Не удалось авторизоваться в OpenAI. "
-            "Проверьте настройку API и повторите позже."
-        ) from error
-
-    except RateLimitError as error:
-        raise ContentPlanGenerationError(
-            "OpenAI временно ограничил число запросов. "
-            "Попробуйте ещё раз немного позже."
-        ) from error
-
-    except (
-        APITimeoutError,
-        APIConnectionError,
-    ) as error:
-        raise ContentPlanGenerationError(
-            "OpenAI сейчас не отвечает. "
-            "Проверьте интернет-соединение "
-            "и попробуйте ещё раз."
-        ) from error
-
-    except APIStatusError as error:
-        raise ContentPlanGenerationError(
-            "OpenAI вернул ошибку сервиса. "
-            "Контент-план не сохранён; "
-            "попробуйте позже."
-        ) from error
-
-    except OpenAIError as error:
-        raise ContentPlanGenerationError(
-            "Не удалось получить ответ OpenAI. "
-            "Контент-план не сохранён; "
-            "попробуйте позже."
-        ) from error
-
-    except (
-        ValidationError,
-        ValueError,
-    ) as error:
-        raise ContentPlanGenerationError(
-            "OpenAI вернул неполный контент-план. "
-            "Ничего не сохранено; "
-            "попробуйте ещё раз."
-        ) from error
-
-    content_plan = response.output_parsed
-
-    if content_plan is None:
-        raise ContentPlanGenerationError(
-            "OpenAI не сформировал контент-план. "
-            "Ничего не сохранено; "
-            "попробуйте ещё раз."
-        )
-
-    days = [
-        item.day
-        for item in content_plan.days
-    ]
-
-    if days != list(range(1, 8)):
-        raise ContentPlanGenerationError(
-            "OpenAI вернул дни в неверном порядке. "
-            "Ничего не сохранено; "
-            "попробуйте ещё раз."
-        )
-
-    return content_plan
-
-
-def format_content_plan_text(
-    client_name,
-    selected_ideas,
-    user_brief,
-    content_plan,
-):
-    result = "📅 AI-контент-план на 7 дней\n\n"
-
-    if client_name:
-        result += f"Клиент: {client_name}\n"
-
-    if selected_ideas:
-        result += "Выбранные идеи:\n"
-
-        for number, idea in enumerate(
-            selected_ideas,
-            start=1,
-        ):
-            result += f"{number}. {idea}\n"
-
-    result += f"Бриф: {user_brief}\n\n"
-
-    for item in content_plan.days:
-        result += (
-            f"День {item.day}\n"
-            f"🎯 Цель: {item.goal}\n"
-            f"📝 Тема: {item.topic}\n"
-            f"📌 Формат: {item.format}\n"
-            f"💬 Ключевой тезис: "
-            f"{item.key_message}\n"
-            f"👉 CTA: {item.cta}\n\n"
-        )
-
-    return result.strip()
-
-
 async def build_content_plan_text(
     client,
     selected_ideas,
     user_brief,
 ):
-    ai_brief = build_ai_brief(
+    return await content_plan_service.build_content_plan_text(
         client,
         selected_ideas,
         user_brief,
     )
 
-    content_plan = await asyncio.to_thread(
-        generate_ai_content_plan,
-        ai_brief,
-    )
-
-    client_name = ""
-
-    if client:
-        client_name = get_client_full_name(client)
-
-    return format_content_plan_text(
-        client_name,
-        selected_ideas,
-        user_brief,
-        content_plan,
-    )
-
 
 def format_content_plans_list(content_plans):
-    result = "📋 Мои контент-планы:\n\n"
-
-    for index, content_plan in enumerate(
-        content_plans,
-        start=1,
-    ):
-        result += (
-            f"№ {index}\n"
-            f"{content_plan}\n\n"
-        )
-
-    return result
-
-
-def shorten_content_plan_title_part(text, max_length):
-    normalized_text = " ".join(text.split())
-
-    if len(normalized_text) <= max_length:
-        return normalized_text
-
-    return normalized_text[:max_length - 1].rstrip() + "…"
-
-
-def create_content_plan_short_title(content_plan):
-    client_name = ""
-    brief_parts = []
-    content_lines = content_plan.splitlines()
-
-    for index, line in enumerate(content_lines):
-        stripped_line = line.strip()
-
-        if stripped_line.startswith("Клиент:"):
-            client_name = stripped_line.partition(":")[2].strip()
-
-        if stripped_line.startswith("Бриф:"):
-            first_brief_part = stripped_line.partition(":")[2].strip()
-
-            if first_brief_part:
-                brief_parts.append(first_brief_part)
-
-            for continuation_line in content_lines[index + 1:]:
-                continuation_line = continuation_line.strip()
-
-                if not continuation_line:
-                    break
-
-                brief_parts.append(continuation_line)
-
-            break
-
-    client_title = shorten_content_plan_title_part(
-        client_name or "Без клиента",
-        CONTENT_PLAN_CLIENT_TITLE_MAX_LENGTH,
+    return content_plan_service.format_content_plans_list(
+        content_plans
     )
-    brief = " ".join(brief_parts) or "Без брифа"
-    separator = " — "
-    brief_max_length = (
-        CONTENT_PLAN_SHORT_TITLE_MAX_LENGTH
-        - len(client_title)
-        - len(separator)
-    )
-    brief_title = shorten_content_plan_title_part(
-        brief,
-        brief_max_length,
-    )
-
-    return f"{client_title}{separator}{brief_title}"
 
 
 def format_compact_content_plans_list(content_plans):
-    lines = ["📋 Выбери контент-план:", ""]
-
-    lines.extend(
-        f"{number}. {create_content_plan_short_title(content_plan)}"
-        for number, content_plan in enumerate(
-            content_plans,
-            start=1,
-        )
+    return content_plan_service.format_compact_content_plans_list(
+        content_plans
     )
-
-    return "\n".join(lines)
 
 
 def create_content_plan_number_menu(content_plans_count):
@@ -597,15 +236,10 @@ def get_selected_content_plan_number(
     message_text,
     content_plans_count,
 ):
-    valid_button_texts = {
-        str(number)
-        for number in range(1, content_plans_count + 1)
-    }
-
-    if message_text not in valid_button_texts:
-        return None
-
-    return int(message_text)
+    return content_plan_service.get_selected_content_plan_number(
+        message_text,
+        content_plans_count,
+    )
 
 
 def split_text_for_telegram(
@@ -734,11 +368,13 @@ async def show_idea_selection(
         post_ideas = load_post_ideas()
 
     post_ideas = list(post_ideas)
-    selected_ideas = [
-        idea
-        for idea in selected_ideas
-        if idea in post_ideas
-    ]
+    (
+        selected_ideas,
+        _,
+    ) = content_plan_service.reconcile_selected_ideas(
+        selected_ideas,
+        post_ideas,
+    )
 
     await state.update_data(
         post_idea_choices=post_ideas,
@@ -943,19 +579,15 @@ async def select_ideas_for_new_plan(
         return
 
     if selected_text == FINISH_IDEAS_BUTTON:
-        missing_selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea not in current_post_ideas
-        ]
+        (
+            selected_ideas,
+            missing_selected_ideas,
+        ) = content_plan_service.reconcile_selected_ideas(
+            selected_ideas,
+            current_post_ideas,
+        )
 
         if missing_selected_ideas:
-            selected_ideas = [
-                idea
-                for idea in selected_ideas
-                if idea in current_post_ideas
-            ]
-
             await state.update_data(
                 selected_ideas=selected_ideas
             )
@@ -1009,11 +641,13 @@ async def select_ideas_for_new_plan(
     selected_idea = post_ideas[selected_number - 1]
 
     if selected_idea not in current_post_ideas:
-        selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea in current_post_ideas
-        ]
+        (
+            selected_ideas,
+            _,
+        ) = content_plan_service.reconcile_selected_ideas(
+            selected_ideas,
+            current_post_ideas,
+        )
 
         await state.update_data(
             selected_ideas=selected_ideas
@@ -1031,10 +665,10 @@ async def select_ideas_for_new_plan(
         )
         return
 
-    if selected_idea in selected_ideas:
-        selected_ideas.remove(selected_idea)
-    else:
-        selected_ideas.append(selected_idea)
+    selected_ideas = content_plan_service.toggle_selected_idea(
+        selected_ideas,
+        selected_idea,
+    )
 
     await state.update_data(
         selected_ideas=selected_ideas
@@ -1111,19 +745,15 @@ async def create_content_plan(
     )
 
     current_post_ideas = load_post_ideas()
-    missing_selected_ideas = [
-        idea
-        for idea in selected_ideas
-        if idea not in current_post_ideas
-    ]
+    (
+        selected_ideas,
+        missing_selected_ideas,
+    ) = content_plan_service.reconcile_selected_ideas(
+        selected_ideas,
+        current_post_ideas,
+    )
 
     if missing_selected_ideas:
-        selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea in current_post_ideas
-        ]
-
         await state.update_data(
             selected_ideas=selected_ideas
         )
@@ -1165,19 +795,15 @@ async def create_content_plan(
         return
 
     latest_post_ideas = load_post_ideas()
-    missing_selected_ideas = [
-        idea
-        for idea in selected_ideas
-        if idea not in latest_post_ideas
-    ]
+    (
+        selected_ideas,
+        missing_selected_ideas,
+    ) = content_plan_service.reconcile_selected_ideas(
+        selected_ideas,
+        latest_post_ideas,
+    )
 
     if missing_selected_ideas:
-        selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea in latest_post_ideas
-        ]
-
         await state.update_data(
             selected_ideas=selected_ideas
         )
@@ -1197,10 +823,9 @@ async def create_content_plan(
         )
         return
 
-    content_plans = read_content_plans()
-    content_plans.append(content_plan)
-
-    save_content_plans(content_plans)
+    content_plan_service.create_and_save_content_plan(
+        content_plan
+    )
 
     await state.clear()
 
@@ -1281,14 +906,11 @@ async def search_content_plan(
     message: Message,
     state: FSMContext,
 ):
-    query = (message.text or "").strip().lower()
     content_plans = read_content_plans()
-
-    found_content_plans = [
-        content_plan
-        for content_plan in content_plans
-        if query in content_plan.lower()
-    ]
+    found_content_plans = content_plan_service.find_content_plans(
+        content_plans,
+        message.text or "",
+    )
 
     await state.clear()
 
@@ -1478,14 +1100,16 @@ async def confirm_delete_content_plan(
     data = await state.get_data()
     number = data.get("content_plan_number")
     selected_content_plan = data.get("selected_content_plan")
-    content_plans = read_content_plans()
+    (
+        content_plan_was_deleted,
+        deleted_content_plan,
+        content_plans,
+    ) = content_plan_service.delete_content_plan(
+        number,
+        selected_content_plan,
+    )
 
-    if (
-        number is None
-        or number < 1
-        or number > len(content_plans)
-        or content_plans[number - 1] != selected_content_plan
-    ):
+    if not content_plan_was_deleted:
         if not content_plans:
             await state.clear()
 
@@ -1508,9 +1132,6 @@ async def confirm_delete_content_plan(
         )
         return
 
-    deleted_content_plan = content_plans.pop(number - 1)
-
-    save_content_plans(content_plans)
     await state.clear()
 
     await send_long_message(
@@ -1779,19 +1400,15 @@ async def select_ideas_for_edit(
         return
 
     if selected_text == FINISH_IDEAS_BUTTON:
-        missing_selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea not in current_post_ideas
-        ]
+        (
+            selected_ideas,
+            missing_selected_ideas,
+        ) = content_plan_service.reconcile_selected_ideas(
+            selected_ideas,
+            current_post_ideas,
+        )
 
         if missing_selected_ideas:
-            selected_ideas = [
-                idea
-                for idea in selected_ideas
-                if idea in current_post_ideas
-            ]
-
             await state.update_data(
                 selected_ideas=selected_ideas
             )
@@ -1845,11 +1462,13 @@ async def select_ideas_for_edit(
     selected_idea = post_ideas[selected_number - 1]
 
     if selected_idea not in current_post_ideas:
-        selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea in current_post_ideas
-        ]
+        (
+            selected_ideas,
+            _,
+        ) = content_plan_service.reconcile_selected_ideas(
+            selected_ideas,
+            current_post_ideas,
+        )
 
         await state.update_data(
             selected_ideas=selected_ideas
@@ -1867,10 +1486,10 @@ async def select_ideas_for_edit(
         )
         return
 
-    if selected_idea in selected_ideas:
-        selected_ideas.remove(selected_idea)
-    else:
-        selected_ideas.append(selected_idea)
+    selected_ideas = content_plan_service.toggle_selected_idea(
+        selected_ideas,
+        selected_idea,
+    )
 
     await state.update_data(
         selected_ideas=selected_ideas
@@ -1956,11 +1575,10 @@ async def edit_content_plan(
 
     content_plans = read_content_plans()
 
-    if (
-        number is None
-        or number < 1
-        or number > len(content_plans)
-        or content_plans[number - 1] != selected_content_plan
+    if not content_plan_service.is_current_content_plan_selection(
+        content_plans,
+        number,
+        selected_content_plan,
     ):
         await state.clear()
 
@@ -1972,19 +1590,15 @@ async def edit_content_plan(
         return
 
     current_post_ideas = load_post_ideas()
-    missing_selected_ideas = [
-        idea
-        for idea in selected_ideas
-        if idea not in current_post_ideas
-    ]
+    (
+        selected_ideas,
+        missing_selected_ideas,
+    ) = content_plan_service.reconcile_selected_ideas(
+        selected_ideas,
+        current_post_ideas,
+    )
 
     if missing_selected_ideas:
-        selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea in current_post_ideas
-        ]
-
         await state.update_data(
             selected_ideas=selected_ideas
         )
@@ -2028,19 +1642,15 @@ async def edit_content_plan(
         return
 
     latest_post_ideas = load_post_ideas()
-    missing_selected_ideas = [
-        idea
-        for idea in selected_ideas
-        if idea not in latest_post_ideas
-    ]
+    (
+        selected_ideas,
+        missing_selected_ideas,
+    ) = content_plan_service.reconcile_selected_ideas(
+        selected_ideas,
+        latest_post_ideas,
+    )
 
     if missing_selected_ideas:
-        selected_ideas = [
-            idea
-            for idea in selected_ideas
-            if idea in latest_post_ideas
-        ]
-
         await state.update_data(
             selected_ideas=selected_ideas
         )
@@ -2060,12 +1670,16 @@ async def edit_content_plan(
         )
         return
 
-    current_content_plans = read_content_plans()
+    (
+        content_plan_was_replaced,
+        _,
+    ) = content_plan_service.replace_content_plan(
+        number,
+        selected_content_plan,
+        updated_content_plan,
+    )
 
-    if (
-        number > len(current_content_plans)
-        or current_content_plans[number - 1] != selected_content_plan
-    ):
+    if not content_plan_was_replaced:
         await state.clear()
 
         await message.answer(
@@ -2074,12 +1688,6 @@ async def edit_content_plan(
             reply_markup=content_plan_menu,
         )
         return
-
-    current_content_plans[number - 1] = (
-        updated_content_plan
-    )
-
-    save_content_plans(current_content_plans)
 
     await state.clear()
 
