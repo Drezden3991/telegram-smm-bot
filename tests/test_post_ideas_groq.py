@@ -290,7 +290,7 @@ class GroqPostIdeasServiceTests(unittest.TestCase):
             ) as load_post_ideas,
             patch.object(
                 post_ideas_service.post_ideas_storage,
-                "save_all_post_ideas",
+                "add_post_ideas",
             ) as save_post_ideas,
             patch.object(
                 post_ideas_groq,

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from handlers import post_ideas
+from models.post_idea import GeneratedPostIdeas
 from services import post_ideas as post_ideas_service
 from storage import post_ideas as post_ideas_storage
 
@@ -47,24 +48,23 @@ class PostIdeasFileTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
 
-        self.file_path = Path(
+        self.database_path = Path(
             self.temporary_directory.name
-        ) / "post_ideas.txt"
+        ) / "post_ideas.db"
         self.file_patch = patch.object(
             post_ideas_storage,
-            "POST_IDEAS_FILE",
-            str(self.file_path),
+            "POST_IDEAS_DATABASE",
+            str(self.database_path),
         )
         self.file_patch.start()
         self.addCleanup(self.file_patch.stop)
 
-    def test_load_post_ideas_returns_empty_for_missing_file(self):
+    def test_load_post_ideas_returns_empty_for_new_database(self):
         self.assertEqual(post_ideas.load_post_ideas(), [])
 
-    def test_load_post_ideas_strips_blank_lines(self):
-        self.file_path.write_text(
-            "  💡 Первая идея  \n\n💡 Вторая идея\n",
-            encoding="utf-8",
+    def test_load_post_ideas_returns_saved_order(self):
+        post_ideas_storage.save_all_post_ideas(
+            ["💡 Первая идея", "💡 Вторая идея"]
         )
 
         self.assertEqual(
@@ -72,29 +72,25 @@ class PostIdeasFileTests(unittest.TestCase):
             ["💡 Первая идея", "💡 Вторая идея"],
         )
 
-    def test_save_all_post_ideas_overwrites_file(self):
-        self.file_path.write_text(
-            "Старое содержимое\n",
-            encoding="utf-8",
-        )
-
+    def test_save_all_post_ideas_overwrites_database_records(self):
+        post_ideas_storage.add_post_idea_to_file("💡 Старое содержимое")
         post_ideas_storage.save_all_post_ideas(
             ["💡 Первая идея", "💡 Вторая идея"]
         )
 
         self.assertEqual(
-            self.file_path.read_text(encoding="utf-8"),
-            "💡 Первая идея\n💡 Вторая идея\n",
+            post_ideas_storage.load_post_ideas(),
+            ["💡 Первая идея", "💡 Вторая идея"],
         )
 
-    def test_add_post_idea_to_file_appends_provided_line(self):
+    def test_add_post_idea_compatibility_method_appends_record(self):
         post_ideas_storage.add_post_idea_to_file(
             "💡 Новая идея"
         )
 
         self.assertEqual(
-            self.file_path.read_text(encoding="utf-8"),
-            "💡 Новая идея\n",
+            post_ideas_storage.load_post_ideas(),
+            ["💡 Новая идея"],
         )
 
 
@@ -150,7 +146,217 @@ class PostIdeasBusinessLogicTests(unittest.TestCase):
         )
 
 
+class PostIdeasAiDispatcherTests(unittest.TestCase):
+    def test_dispatcher_uses_selected_provider(self):
+        cases = (
+            (
+                "openai",
+                "services.post_ideas_openai.generate_openai_post_ideas",
+            ),
+            (
+                "gemini",
+                "services.post_ideas_gemini.generate_gemini_post_ideas",
+            ),
+            (
+                "groq",
+                "services.post_ideas_groq.generate_groq_post_ideas",
+            ),
+        )
+        expected = GeneratedPostIdeas(
+            ideas=["Первая", "Вторая", "Третья"]
+        )
+
+        for provider, target in cases:
+            with self.subTest(provider=provider), patch(
+                target,
+                return_value=expected,
+            ) as generate:
+                result = post_ideas_service.generate_post_ideas(
+                    provider,
+                    "Контекст",
+                    "Бриф",
+                    ["💡 Существующая идея"],
+                )
+
+            self.assertIs(result, expected)
+            generate.assert_called_once_with(
+                "Контекст",
+                "Бриф",
+                ["💡 Существующая идея"],
+            )
+
+    def test_dispatcher_rejects_unknown_provider(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "Неизвестный AI-provider",
+        ):
+            post_ideas_service.generate_post_ideas(
+                "unknown",
+                "Контекст",
+                "Бриф",
+                [],
+            )
+
+
+class PostIdeasAiHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_each_provider_is_saved_and_used_for_generation(self):
+        cases = (
+            (post_ideas.OPENAI_PROVIDER_BUTTON, "openai"),
+            (post_ideas.GEMINI_PROVIDER_BUTTON, "gemini"),
+            (post_ideas.GROQ_PROVIDER_BUTTON, "groq"),
+        )
+
+        for button_text, provider in cases:
+            with self.subTest(provider=provider):
+                message = FakeMessage(button_text)
+                state = FakeState(
+                    data={
+                        "selected_client": {"name": "Иван"},
+                        "ai_brief": "Идеи для кофейни",
+                    },
+                    state=(
+                        post_ideas.GeneratePostIdeas
+                        .waiting_for_provider
+                    ),
+                )
+
+                with patch.object(
+                    post_ideas.post_ideas_service,
+                    "generate_post_idea_candidates",
+                    return_value=["Первая", "Вторая", "Третья"],
+                ) as generate:
+                    await post_ideas.generate_ai_post_ideas(
+                        message,
+                        state,
+                    )
+
+                self.assertEqual(state.data["ai_provider"], provider)
+                self.assertEqual(
+                    state.data["ai_candidates"],
+                    ["Первая", "Вторая", "Третья"],
+                )
+                self.assertEqual(
+                    state.data["selected_ai_candidates"],
+                    [],
+                )
+                self.assertIs(
+                    state.state,
+                    post_ideas.GeneratePostIdeas.waiting_for_candidates,
+                )
+                generate.assert_called_once_with(
+                    {"name": "Иван"},
+                    "Идеи для кофейни",
+                    provider,
+                )
+
+    async def test_generated_candidates_are_not_saved_automatically(self):
+        message = FakeMessage(post_ideas.GEMINI_PROVIDER_BUTTON)
+        state = FakeState(
+            data={"selected_client": None, "ai_brief": "Бриф"}
+        )
+
+        with (
+            patch.object(
+                post_ideas.post_ideas_service,
+                "generate_post_idea_candidates",
+                return_value=["Первая", "Вторая", "Третья"],
+            ),
+            patch.object(
+                post_ideas.post_ideas_service,
+                "save_selected_post_ideas",
+            ) as save,
+        ):
+            await post_ideas.generate_ai_post_ideas(message, state)
+
+        save.assert_not_called()
+
+    async def test_selected_candidates_use_existing_batch_save_logic(self):
+        message = FakeMessage(post_ideas.SAVE_SELECTED_IDEAS_BUTTON)
+        state = FakeState(
+            data={
+                "ai_candidates": ["Первая", "Вторая", "Третья"],
+                "selected_ai_candidates": ["Первая", "Третья"],
+            }
+        )
+
+        with patch.object(
+            post_ideas.post_ideas_service,
+            "save_selected_post_ideas",
+            return_value=(
+                ["💡 Первая"],
+                ["💡 Третья"],
+            ),
+        ) as save:
+            await post_ideas.save_selected_ai_post_ideas(
+                message,
+                state,
+            )
+
+        save.assert_called_once_with(["Первая", "Третья"])
+        self.assertTrue(state.cleared)
+        self.assertIn("💡 Первая", message.answers[-1][0])
+        self.assertIn("💡 Третья", message.answers[-1][0])
+
+    async def test_provider_error_does_not_save_candidates(self):
+        message = FakeMessage(post_ideas.GROQ_PROVIDER_BUTTON)
+        state = FakeState(
+            data={"selected_client": None, "ai_brief": "Бриф"}
+        )
+        error = post_ideas_service.PostIdeasGenerationError(
+            "Groq сейчас не отвечает."
+        )
+
+        with (
+            patch.object(
+                post_ideas.post_ideas_service,
+                "generate_post_idea_candidates",
+                side_effect=error,
+            ),
+            patch.object(
+                post_ideas.post_ideas_service,
+                "save_selected_post_ideas",
+            ) as save,
+        ):
+            await post_ideas.generate_ai_post_ideas(message, state)
+
+        save.assert_not_called()
+        self.assertTrue(state.cleared)
+        self.assertIn("Groq сейчас не отвечает.", message.answers[-1][0])
+
+    async def test_back_from_provider_selection_returns_to_brief(self):
+        message = FakeMessage(post_ideas.BACK_BUTTON)
+        state = FakeState(data={"ai_brief": "Бриф"})
+
+        await post_ideas.back_to_ai_brief(message, state)
+
+        self.assertIs(
+            state.state,
+            post_ideas.GeneratePostIdeas.waiting_for_brief,
+        )
+        self.assertIn("Опиши, какие идеи нужны", message.answers[-1][0])
+
+
 class PostIdeasHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_random_idea_keeps_manual_flow(self):
+        message = FakeMessage()
+
+        with (
+            patch.object(
+                post_ideas,
+                "load_post_ideas",
+                return_value=["💡 Первая идея"],
+            ),
+            patch.object(
+                post_ideas.post_ideas_service,
+                "choose_random_post_idea",
+                return_value="💡 Первая идея",
+            ) as choose,
+        ):
+            await post_ideas.random_post_idea(message)
+
+        choose.assert_called_once_with(["💡 Первая идея"])
+        self.assertEqual(message.answers[-1][0], "💡 Первая идея")
+
     async def test_delete_prompt_stores_displayed_ideas_snapshot(self):
         ideas = ["💡 Первая идея", "💡 Вторая идея"]
         message = FakeMessage("🗑 Удалить идею")
@@ -300,13 +506,13 @@ class PostIdeasCrudCharacterizationTests(
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
 
-        self.file_path = Path(
+        self.database_path = Path(
             self.temporary_directory.name
-        ) / "post_ideas.txt"
+        ) / "post_ideas.db"
         self.file_patch = patch.object(
             post_ideas_storage,
-            "POST_IDEAS_FILE",
-            str(self.file_path),
+            "POST_IDEAS_DATABASE",
+            str(self.database_path),
         )
         self.file_patch.start()
         self.addCleanup(self.file_patch.stop)
@@ -387,8 +593,8 @@ class PostIdeasCrudCharacterizationTests(
 
         with patch.object(
             post_ideas_storage,
-            "save_all_post_ideas",
-            wraps=post_ideas_storage.save_all_post_ideas,
+            "update_post_idea_by_position",
+            wraps=post_ideas_storage.update_post_idea_by_position,
         ) as save_post_ideas:
             await post_ideas.save_edited_post_idea(
                 message,
@@ -400,7 +606,10 @@ class PostIdeasCrudCharacterizationTests(
             "💡 Обновлённая идея",
             "💡 Третья идея",
         ]
-        save_post_ideas.assert_called_once()
+        save_post_ideas.assert_called_once_with(
+            2,
+            "💡 Обновлённая идея",
+        )
         self.assertEqual(
             post_ideas_storage.load_post_ideas(),
             expected_ideas,
@@ -430,7 +639,7 @@ class PostIdeasCrudCharacterizationTests(
 
         with patch.object(
             post_ideas_storage,
-            "save_all_post_ideas",
+            "update_post_idea_by_position",
             save_post_ideas,
         ):
             await post_ideas.save_edited_post_idea(
@@ -464,8 +673,8 @@ class PostIdeasCrudCharacterizationTests(
 
         with patch.object(
             post_ideas_storage,
-            "save_all_post_ideas",
-            wraps=post_ideas_storage.save_all_post_ideas,
+            "delete_post_idea_by_position",
+            wraps=post_ideas_storage.delete_post_idea_by_position,
         ) as save_post_ideas:
             await post_ideas.delete_post_idea_by_number(
                 message,
@@ -476,7 +685,7 @@ class PostIdeasCrudCharacterizationTests(
             "💡 Первая идея",
             "💡 Третья идея",
         ]
-        save_post_ideas.assert_called_once_with(expected_ideas)
+        save_post_ideas.assert_called_once_with(2)
         self.assertEqual(
             post_ideas_storage.load_post_ideas(),
             expected_ideas,
@@ -506,7 +715,7 @@ class PostIdeasCrudCharacterizationTests(
 
         with patch.object(
             post_ideas_storage,
-            "save_all_post_ideas",
+            "delete_post_idea_by_position",
             save_post_ideas,
         ):
             await post_ideas.delete_post_idea_by_number(
@@ -547,7 +756,7 @@ class PostIdeasCrudCharacterizationTests(
 
         with patch.object(
             post_ideas_storage,
-            "save_all_post_ideas",
+            "update_post_idea_by_position",
             save_post_ideas,
         ):
             await post_ideas.save_edited_post_idea(

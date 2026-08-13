@@ -34,6 +34,12 @@ POST_IDEAS_AI_CONTRACT = (
     "рассуждения, категории или оценки."
 )
 
+POST_IDEAS_AI_PROVIDERS = (
+    "openai",
+    "gemini",
+    "groq",
+)
+
 
 def get_client_full_name(client: Client) -> str:
     name = client.get("name", "").strip()
@@ -205,64 +211,78 @@ def create_post_idea(idea):
 def generate_post_idea_candidates(
     client: Client | None,
     brief: str,
+    provider: str = "gemini",
 ) -> list[str]:
-    from services import post_ideas_gemini
-
     existing_ideas = (
         post_ideas_storage.load_post_ideas()
     )
     client_ai_context = build_client_ai_context(client)
-    generated_ideas = (
-        post_ideas_gemini.generate_gemini_post_ideas(
+    generated_ideas = generate_post_ideas(
+        provider,
+        client_ai_context,
+        brief,
+        existing_ideas,
+    )
+
+    return list(generated_ideas.ideas)
+
+
+def generate_post_ideas(
+    provider: str,
+    client_ai_context: str,
+    brief: str,
+    existing_ideas: list[str],
+):
+    if provider == "openai":
+        from services import post_ideas_openai
+
+        return post_ideas_openai.generate_openai_post_ideas(
             client_ai_context,
             brief,
             existing_ideas,
         )
-    )
 
-    return list(generated_ideas.ideas)
+    if provider == "gemini":
+        from services import post_ideas_gemini
+
+        return post_ideas_gemini.generate_gemini_post_ideas(
+            client_ai_context,
+            brief,
+            existing_ideas,
+        )
+
+    if provider == "groq":
+        from services import post_ideas_groq
+
+        return post_ideas_groq.generate_groq_post_ideas(
+            client_ai_context,
+            brief,
+            existing_ideas,
+        )
+
+    raise ValueError(f"Неизвестный AI-provider: {provider}")
 
 
 def generate_openai_post_idea_candidates(
     client: Client | None,
     brief: str,
 ) -> list[str]:
-    from services import post_ideas_openai
-
-    existing_ideas = (
-        post_ideas_storage.load_post_ideas()
+    return generate_post_idea_candidates(
+        client,
+        brief,
+        provider="openai",
     )
-    client_ai_context = build_client_ai_context(client)
-    generated_ideas = (
-        post_ideas_openai.generate_openai_post_ideas(
-            client_ai_context,
-            brief,
-            existing_ideas,
-        )
-    )
-
-    return list(generated_ideas.ideas)
 
 
 def generate_groq_post_idea_candidates(
     client: Client | None,
     brief: str,
 ) -> list[str]:
-    from services import post_ideas_groq
-
-    existing_ideas = (
-        post_ideas_storage.load_post_ideas()
+    return generate_post_idea_candidates(
+        client,
+        brief,
+        provider="groq",
     )
-    client_ai_context = build_client_ai_context(client)
-    generated_ideas = (
-        post_ideas_groq.generate_groq_post_ideas(
-            client_ai_context,
-            brief,
-            existing_ideas,
-        )
-    )
-
-    return list(generated_ideas.ideas)
 
 
 def save_selected_post_ideas(
@@ -287,9 +307,7 @@ def save_selected_post_ideas(
         added_ideas.append(formatted_idea)
 
     if added_ideas:
-        post_ideas_storage.save_all_post_ideas(
-            updated_post_ideas
-        )
+        post_ideas_storage.add_post_ideas(added_ideas)
 
     return added_ideas, duplicate_ideas
 
@@ -326,21 +344,14 @@ def delete_post_idea(
             current_post_ideas,
         )
 
-    (
-        _,
-        _,
-        remaining_post_ideas,
-    ) = prepare_post_idea_deletion(
-        current_post_ideas,
-        number_text,
+    post_ideas_storage.delete_post_idea_by_position(
+        idea_number
     )
     formatted_remaining_post_ideas = [
         format_post_idea(idea)
-        for idea in remaining_post_ideas
+        for index, idea in enumerate(current_post_ideas, start=1)
+        if index != idea_number
     ]
-    post_ideas_storage.save_all_post_ideas(
-        formatted_remaining_post_ideas
-    )
 
     return (
         IDEA_OPERATION_READY,
@@ -389,8 +400,9 @@ def edit_post_idea(
         format_post_idea(idea)
         for idea in updated_post_ideas
     ]
-    post_ideas_storage.save_all_post_ideas(
-        formatted_post_ideas
+    post_ideas_storage.update_post_idea_by_position(
+        idea_number,
+        formatted_idea,
     )
 
     return (

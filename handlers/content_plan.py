@@ -23,6 +23,9 @@ WITHOUT_CLIENT_BUTTON = "🚫 Без клиента"
 SKIP_IDEAS_BUTTON = "⏭ Пропустить идеи"
 FINISH_IDEAS_BUTTON = "✅ Готово"
 BACK_BUTTON = "⬅️ Назад"
+OPENAI_PROVIDER_BUTTON = "OpenAI"
+GEMINI_PROVIDER_BUTTON = "Gemini"
+GROQ_PROVIDER_BUTTON = "Groq"
 CONFIRM_DELETE_BUTTON = "✅ Да, удалить"
 CANCEL_DELETE_BUTTON = "❌ Отмена"
 
@@ -30,6 +33,7 @@ class CreateContentPlan(StatesGroup):
     waiting_for_client = State()
     waiting_for_ideas = State()
     waiting_for_brief = State()
+    waiting_for_provider = State()
 
 
 class SearchContentPlan(StatesGroup):
@@ -46,6 +50,7 @@ class EditContentPlan(StatesGroup):
     waiting_for_client = State()
     waiting_for_ideas = State()
     waiting_for_new_brief = State()
+    waiting_for_provider = State()
 
 
 content_plan_menu = ReplyKeyboardMarkup(
@@ -165,6 +170,37 @@ def create_ideas_menu(
     )
 
 
+def create_ai_provider_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=OPENAI_PROVIDER_BUTTON),
+                KeyboardButton(text=GEMINI_PROVIDER_BUTTON),
+                KeyboardButton(text=GROQ_PROVIDER_BUTTON),
+            ],
+            [KeyboardButton(text=BACK_BUTTON)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def get_selected_ai_provider(message_text):
+    providers = {
+        OPENAI_PROVIDER_BUTTON: "openai",
+        GEMINI_PROVIDER_BUTTON: "gemini",
+        GROQ_PROVIDER_BUTTON: "groq",
+    }
+
+    return providers.get(message_text)
+
+
+async def ask_for_ai_provider(message):
+    await message.answer(
+        "Выбери AI для создания контент-плана:",
+        reply_markup=create_ai_provider_menu(),
+    )
+
+
 def get_selected_idea_number(
     message_text,
     ideas_count,
@@ -195,11 +231,13 @@ async def build_content_plan_text(
     client,
     selected_ideas,
     user_brief,
+    provider="openai",
 ):
     return await content_plan_service.build_content_plan_text(
         client,
         selected_ideas,
         user_brief,
+        provider,
     )
 
 
@@ -773,9 +811,176 @@ async def create_content_plan(
         )
         return
 
+    await state.update_data(user_brief=user_brief)
+    await state.set_state(
+        CreateContentPlan.waiting_for_provider
+    )
+    await ask_for_ai_provider(message)
+
+
+@router.message(
+    EditContentPlan.waiting_for_provider,
+    F.text == BACK_BUTTON,
+)
+async def back_to_edit_brief(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(
+        EditContentPlan.waiting_for_new_brief
+    )
+    await ask_for_new_brief(message)
+
+
+@router.message(
+    EditContentPlan.waiting_for_provider
+)
+async def generate_edited_content_plan(
+    message: Message,
+    state: FSMContext,
+):
+    provider = get_selected_ai_provider(message.text)
+
+    if provider is None:
+        await message.answer(
+            "Пожалуйста, выбери AI кнопкой ниже.",
+            reply_markup=create_ai_provider_menu(),
+        )
+        return
+
+    data = await state.get_data()
+    number = data.get("content_plan_number")
+    selected_content_plan = data.get("selected_content_plan")
+    selected_client = data.get("selected_client")
+    selected_ideas = data.get("selected_ideas", [])
+    new_brief = data.get("new_brief")
+
+    if not new_brief:
+        await state.set_state(
+            EditContentPlan.waiting_for_new_brief
+        )
+        await ask_for_new_brief(message)
+        return
+
+    await state.update_data(ai_provider=provider)
+    await message.answer(
+        "⏳ Обновляю контент-план "
+        f"через {message.text}..."
+    )
+
+    try:
+        updated_content_plan = await build_content_plan_text(
+            selected_client,
+            selected_ideas,
+            new_brief,
+            provider,
+        )
+
+    except ContentPlanGenerationError as error:
+        await state.clear()
+        await message.answer(
+            str(error),
+            reply_markup=content_plan_menu,
+        )
+        return
+
+    latest_post_ideas = load_post_ideas()
+    (
+        selected_ideas,
+        missing_selected_ideas,
+    ) = content_plan_service.reconcile_selected_ideas(
+        selected_ideas,
+        latest_post_ideas,
+    )
+
+    if missing_selected_ideas:
+        await state.update_data(selected_ideas=selected_ideas)
+        await state.set_state(EditContentPlan.waiting_for_ideas)
+        await message.answer(
+            "Список идей изменился во время обновления. "
+            "Контент-план не сохранён; выбери идеи заново."
+        )
+        await show_idea_selection(
+            message,
+            state,
+            selected_ideas,
+            post_ideas=latest_post_ideas,
+        )
+        return
+
+    (
+        content_plan_was_replaced,
+        _,
+    ) = content_plan_service.replace_content_plan(
+        number,
+        selected_content_plan,
+        updated_content_plan,
+    )
+
+    if not content_plan_was_replaced:
+        await state.clear()
+        await message.answer(
+            "Список контент-планов изменился во время обновления. "
+            "Ничего не сохранено; выбери план заново.",
+            reply_markup=content_plan_menu,
+        )
+        return
+
+    await state.clear()
+    await send_long_message(
+        message,
+        "✅ Контент-план успешно обновлён:\n\n"
+        f"{updated_content_plan}",
+        reply_markup=content_plan_menu,
+    )
+
+
+@router.message(
+    CreateContentPlan.waiting_for_provider,
+    F.text == BACK_BUTTON,
+)
+async def back_to_create_brief(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(
+        CreateContentPlan.waiting_for_brief
+    )
+    await ask_for_brief(message)
+
+
+@router.message(
+    CreateContentPlan.waiting_for_provider
+)
+async def generate_new_content_plan(
+    message: Message,
+    state: FSMContext,
+):
+    provider = get_selected_ai_provider(message.text)
+
+    if provider is None:
+        await message.answer(
+            "Пожалуйста, выбери AI кнопкой ниже.",
+            reply_markup=create_ai_provider_menu(),
+        )
+        return
+
+    data = await state.get_data()
+    user_brief = data.get("user_brief")
+    selected_client = data.get("selected_client")
+    selected_ideas = data.get("selected_ideas", [])
+
+    if not user_brief:
+        await state.set_state(
+            CreateContentPlan.waiting_for_brief
+        )
+        await ask_for_brief(message)
+        return
+
+    await state.update_data(ai_provider=provider)
     await message.answer(
         "⏳ Создаю контент-план "
-        "с помощью GPT-5.6..."
+        f"через {message.text}..."
     )
 
     try:
@@ -783,11 +988,11 @@ async def create_content_plan(
             selected_client,
             selected_ideas,
             user_brief,
+            provider,
         )
 
     except ContentPlanGenerationError as error:
         await state.clear()
-
         await message.answer(
             str(error),
             reply_markup=content_plan_menu,
@@ -810,7 +1015,6 @@ async def create_content_plan(
         await state.set_state(
             CreateContentPlan.waiting_for_ideas
         )
-
         await message.answer(
             "Список идей изменился во время создания. "
             "Контент-план не сохранён; выбери идеи заново."
@@ -823,17 +1027,9 @@ async def create_content_plan(
         )
         return
 
-    content_plan_service.create_and_save_content_plan(
-        content_plan
-    )
-
+    content_plan_service.create_and_save_content_plan(content_plan)
     await state.clear()
-
-    await send_long_message(
-        message,
-        content_plan,
-    )
-
+    await send_long_message(message, content_plan)
     await message.answer(
         "✅ Контент-план успешно сохранён.",
         reply_markup=content_plan_menu,
@@ -1618,85 +1814,11 @@ async def edit_content_plan(
         )
         return
 
-    await message.answer(
-        "⏳ Обновляю контент-план "
-        "с помощью GPT-5.6..."
+    await state.update_data(new_brief=new_brief)
+    await state.set_state(
+        EditContentPlan.waiting_for_provider
     )
-
-    try:
-        updated_content_plan = (
-            await build_content_plan_text(
-                selected_client,
-                selected_ideas,
-                new_brief,
-            )
-        )
-
-    except ContentPlanGenerationError as error:
-        await state.clear()
-
-        await message.answer(
-            str(error),
-            reply_markup=content_plan_menu,
-        )
-        return
-
-    latest_post_ideas = load_post_ideas()
-    (
-        selected_ideas,
-        missing_selected_ideas,
-    ) = content_plan_service.reconcile_selected_ideas(
-        selected_ideas,
-        latest_post_ideas,
-    )
-
-    if missing_selected_ideas:
-        await state.update_data(
-            selected_ideas=selected_ideas
-        )
-        await state.set_state(
-            EditContentPlan.waiting_for_ideas
-        )
-
-        await message.answer(
-            "Список идей изменился во время обновления. "
-            "Контент-план не сохранён; выбери идеи заново."
-        )
-        await show_idea_selection(
-            message,
-            state,
-            selected_ideas,
-            post_ideas=latest_post_ideas,
-        )
-        return
-
-    (
-        content_plan_was_replaced,
-        _,
-    ) = content_plan_service.replace_content_plan(
-        number,
-        selected_content_plan,
-        updated_content_plan,
-    )
-
-    if not content_plan_was_replaced:
-        await state.clear()
-
-        await message.answer(
-            "Список контент-планов изменился во время обновления. "
-            "Ничего не сохранено; выбери план заново.",
-            reply_markup=content_plan_menu,
-        )
-        return
-
-    await state.clear()
-
-    await send_long_message(
-        message,
-        "✅ Контент-план успешно обновлён:\n\n"
-        f"{updated_content_plan}",
-        reply_markup=content_plan_menu,
-    )
+    await ask_for_ai_provider(message)
 
 
 @router.message(

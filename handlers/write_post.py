@@ -16,6 +16,10 @@ router = Router()
 WITHOUT_CLIENT_BUTTON = "🚫 Без клиента"
 CUSTOM_TOPIC_BUTTON = "✍️ Своя тема"
 BACK_BUTTON = "⬅️ Назад"
+TEMPLATE_POST_BUTTON = "📝 По шаблону"
+OPENAI_PROVIDER_BUTTON = "OpenAI"
+GEMINI_PROVIDER_BUTTON = "Gemini"
+GROQ_PROVIDER_BUTTON = "Groq"
 
 AVAILABLE_STYLES = [
     "Экспертный",
@@ -30,6 +34,7 @@ class WritePost(StatesGroup):
     waiting_for_topic_choice = State()
     waiting_for_custom_topic = State()
     waiting_for_style = State()
+    waiting_for_provider = State()
     waiting_for_search_query = State()
     waiting_for_delete_id = State()
 
@@ -56,6 +61,38 @@ style_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
+
+
+def create_post_method_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=TEMPLATE_POST_BUTTON)],
+            [
+                KeyboardButton(text=OPENAI_PROVIDER_BUTTON),
+                KeyboardButton(text=GEMINI_PROVIDER_BUTTON),
+                KeyboardButton(text=GROQ_PROVIDER_BUTTON),
+            ],
+            [KeyboardButton(text=BACK_BUTTON)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def get_selected_ai_provider(message_text):
+    providers = {
+        OPENAI_PROVIDER_BUTTON: "openai",
+        GEMINI_PROVIDER_BUTTON: "gemini",
+        GROQ_PROVIDER_BUTTON: "groq",
+    }
+
+    return providers.get(message_text)
+
+
+async def ask_for_post_method(message):
+    await message.answer(
+        "Выбери способ создания поста:",
+        reply_markup=create_post_method_menu(),
+    )
 
 
 def load_posts():
@@ -379,7 +416,7 @@ async def back_from_style(
 
 
 @router.message(WritePost.waiting_for_style)
-async def create_post(
+async def select_post_style(
     message: Message,
     state: FSMContext,
 ):
@@ -392,29 +429,12 @@ async def create_post(
         )
         return
 
-    data = await state.get_data()
+    await state.update_data(style=style)
+    await state.set_state(WritePost.waiting_for_provider)
+    await ask_for_post_method(message)
 
-    client_name = data.get("client", "")
-    client_context = data.get("client_context")
-    topic = data.get("topic", "")
 
-    if not topic:
-        await state.set_state(
-            WritePost.waiting_for_topic_choice
-        )
-
-        await message.answer(
-            "Тема поста не найдена. Выбери её ещё раз."
-        )
-        await show_topic_selection(message)
-        return
-
-    post = write_post_service.create_and_save_post(
-        client_name,
-        client_context,
-        topic,
-        style,
-    )
+async def send_created_post(message, state, post):
     post_id = post["id"]
     post_text = post["text"]
 
@@ -426,6 +446,102 @@ async def create_post(
         f"{post_text}",
         reply_markup=write_post_menu,
     )
+
+
+@router.message(
+    WritePost.waiting_for_provider,
+    F.text == BACK_BUTTON,
+)
+async def back_from_post_method(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(WritePost.waiting_for_style)
+    await message.answer(
+        "Выбери стиль поста:",
+        reply_markup=style_menu,
+    )
+
+
+@router.message(
+    WritePost.waiting_for_provider,
+    F.text == TEMPLATE_POST_BUTTON,
+)
+async def create_template_post(
+    message: Message,
+    state: FSMContext,
+):
+    data = await state.get_data()
+    topic = data.get("topic", "")
+
+    if not topic:
+        await state.set_state(
+            WritePost.waiting_for_topic_choice
+        )
+        await message.answer(
+            "Тема поста не найдена. Выбери её ещё раз."
+        )
+        await show_topic_selection(message)
+        return
+
+    post = write_post_service.create_and_save_post(
+        data.get("client", ""),
+        data.get("client_context"),
+        topic,
+        data.get("style", ""),
+    )
+    await send_created_post(message, state, post)
+
+
+@router.message(WritePost.waiting_for_provider)
+async def create_ai_post(
+    message: Message,
+    state: FSMContext,
+):
+    provider = get_selected_ai_provider(message.text)
+
+    if provider is None:
+        await message.answer(
+            "Пожалуйста, выбери способ создания кнопкой ниже:",
+            reply_markup=create_post_method_menu(),
+        )
+        return
+
+    data = await state.get_data()
+    topic = data.get("topic", "")
+
+    if not topic:
+        await state.set_state(
+            WritePost.waiting_for_topic_choice
+        )
+        await message.answer(
+            "Тема поста не найдена. Выбери её ещё раз."
+        )
+        await show_topic_selection(message)
+        return
+
+    await state.update_data(ai_provider=provider)
+    await message.answer(
+        f"⏳ Создаю пост через {message.text}..."
+    )
+
+    try:
+        post = write_post_service.create_and_save_ai_post(
+            provider,
+            data.get("client", ""),
+            data.get("client_context"),
+            topic,
+            data.get("style", ""),
+        )
+    except write_post_service.WritePostGenerationError as error:
+        await state.clear()
+        await message.answer(
+            str(error),
+            reply_markup=write_post_menu,
+        )
+        return
+
+    await send_created_post(message, state, post)
 
 
 @router.message(F.text == "📋 История постов")
@@ -608,6 +724,8 @@ async def get_delete_id(
     StateFilter(None),
     F.text == BACK_BUTTON,
 )
+
+
 async def back(message: Message):
     await message.answer(
         "Главное меню:",

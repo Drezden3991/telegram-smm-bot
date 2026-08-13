@@ -12,6 +12,8 @@ from handlers import content_plan, post_ideas, write_post
 from models.content_plan import ContentPlanDay, SevenDayContentPlan
 from services import content_plan as content_plan_service
 from services import content_plan_openai as content_plan_openai_service
+from services import content_plan_gemini as content_plan_gemini_service
+from services import content_plan_groq as content_plan_groq_service
 from storage import clients as clients_storage
 from storage import content_plans as content_plans_storage
 
@@ -226,7 +228,7 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
 
         temporary_path = Path(self.temporary_directory.name)
         self.clients_file = temporary_path / "clients.txt"
-        self.post_ideas_file = temporary_path / "post_ideas.txt"
+        self.post_ideas_database = temporary_path / "post_ideas.db"
 
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
@@ -236,10 +238,12 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
             "clients_storage",
             self.clients_file,
         )
-        self._patch_file_path(
-            "POST_IDEAS_FILE",
-            "post_ideas_storage",
-            self.post_ideas_file,
+        self.file_patches.enter_context(
+            patch.object(
+                content_plan.post_ideas_storage,
+                "POST_IDEAS_DATABASE",
+                str(self.post_ideas_database),
+            )
         )
 
     def _patch_file_path(
@@ -361,9 +365,8 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
         self.assertEqual(loaded_clients[0]["name"], "Иван")
 
     def test_load_post_ideas_preserves_current_line_format(self):
-        self.post_ideas_file.write_text(
-            "  💡 Первая идея  \nВторая идея\n",
-            encoding="utf-8",
+        content_plan.post_ideas_storage.save_all_post_ideas(
+            ["💡 Первая идея", "Вторая идея"]
         )
 
         self.assertEqual(
@@ -375,9 +378,8 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
         self.assertEqual(content_plan.load_post_ideas(), [])
 
     def test_load_post_ideas_skips_blank_lines(self):
-        self.post_ideas_file.write_text(
-            "\n   \nИдея\n\t\n",
-            encoding="utf-8",
+        content_plan.post_ideas_storage.save_all_post_ideas(
+            ["Идея"]
         )
 
         self.assertEqual(
@@ -749,6 +751,42 @@ class ContentPlanAiContextTests(unittest.TestCase):
 
 
 class ContentPlanBuildTextTests(unittest.IsolatedAsyncioTestCase):
+    def test_generation_dispatches_to_selected_provider(self):
+        cases = (
+            (
+                "openai",
+                "services.content_plan_openai.generate_ai_content_plan",
+            ),
+            (
+                "gemini",
+                "services.content_plan_gemini.generate_gemini_content_plan",
+            ),
+            (
+                "groq",
+                "services.content_plan_groq.generate_groq_content_plan",
+            ),
+        )
+
+        for provider, target in cases:
+            with self.subTest(provider=provider), patch(
+                target,
+                return_value=make_plan(),
+            ) as generate:
+                result = content_plan_service.generate_content_plan(
+                    provider,
+                    "Тестовый бриф",
+                )
+
+            generate.assert_called_once_with("Тестовый бриф")
+            self.assertEqual(result, make_plan())
+
+    def test_unknown_provider_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Неизвестный AI-provider"):
+            content_plan_service.generate_content_plan(
+                "unknown",
+                "Тестовый бриф",
+            )
+
     async def test_build_without_client_or_ideas_preserves_arguments(self):
         generated_plan = make_plan()
         expected_brief = (
@@ -773,7 +811,8 @@ class ContentPlanBuildTextTests(unittest.IsolatedAsyncioTestCase):
             )
 
         to_thread_mock.assert_awaited_once_with(
-            content_plan_openai_service.generate_ai_content_plan,
+            content_plan_service.generate_content_plan,
+            "openai",
             expected_brief,
         )
         format_mock.assert_called_once_with(
@@ -825,7 +864,8 @@ class ContentPlanBuildTextTests(unittest.IsolatedAsyncioTestCase):
             )
 
         to_thread_mock.assert_awaited_once_with(
-            content_plan_openai_service.generate_ai_content_plan,
+            content_plan_service.generate_content_plan,
+            "openai",
             expected_brief,
         )
         format_mock.assert_called_once_with(
@@ -1476,13 +1516,14 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
         existing_plans = ["Первый план", "Второй план"]
         existing_plans_snapshot = list(existing_plans)
         new_plan = "Новый план\nБез дополнительного форматирования"
-        message = FakeMessage("Новый бриф")
+        message = FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON)
         state = FakeState(
             data={
                 "selected_client": None,
                 "selected_ideas": [],
+                "user_brief": "Новый бриф",
             },
-            state=content_plan.CreateContentPlan.waiting_for_brief,
+            state=content_plan.CreateContentPlan.waiting_for_provider,
         )
 
         with (
@@ -1502,7 +1543,7 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 "storage.content_plans.save_content_plans"
             ) as save_content_plans,
         ):
-            await content_plan.create_content_plan(message, state)
+            await content_plan.generate_new_content_plan(message, state)
 
         save_content_plans.assert_called_once_with(
             [*existing_plans, new_plan]
@@ -1600,15 +1641,16 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
     async def test_replace_selected_plan_preserves_order_and_saves_once(self):
         plans = ["Первый план", "Старый план", "Третий план"]
         updated_plan = "Новая версия\nБез дополнительного форматирования"
-        message = FakeMessage("Новый бриф")
+        message = FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON)
         state = FakeState(
             data={
                 "content_plan_number": 2,
                 "selected_content_plan": plans[1],
                 "selected_client": None,
                 "selected_ideas": [],
+                "new_brief": "Новый бриф",
             },
-            state=content_plan.EditContentPlan.waiting_for_new_brief,
+            state=content_plan.EditContentPlan.waiting_for_provider,
         )
 
         with (
@@ -1628,7 +1670,7 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 "storage.content_plans.save_content_plans"
             ) as save_content_plans,
         ):
-            await content_plan.edit_content_plan(message, state)
+            await content_plan.generate_edited_content_plan(message, state)
 
         save_content_plans.assert_called_once_with(
             [plans[0], updated_plan, plans[2]]
@@ -1642,15 +1684,16 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
         selected_plan = "Старый план"
         current_plan = "Изменённый план"
         updated_plan = "Новая версия"
-        message = FakeMessage("Новый бриф")
+        message = FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON)
         state = FakeState(
             data={
                 "content_plan_number": 1,
                 "selected_content_plan": selected_plan,
                 "selected_client": None,
                 "selected_ideas": [],
+                "new_brief": "Новый бриф",
             },
-            state=content_plan.EditContentPlan.waiting_for_new_brief,
+            state=content_plan.EditContentPlan.waiting_for_provider,
         )
 
         with (
@@ -1711,6 +1754,132 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_brief_opens_provider_selection(self):
+        message = FakeMessage("Новый бриф")
+        state = FakeState(
+            data={
+                "selected_client": None,
+                "selected_ideas": [],
+            },
+            state=content_plan.CreateContentPlan.waiting_for_brief,
+        )
+
+        with patch(
+            "handlers.content_plan.load_post_ideas",
+            return_value=[],
+        ):
+            await content_plan.create_content_plan(message, state)
+
+        self.assertEqual(state.data["user_brief"], "Новый бриф")
+        self.assertEqual(
+            state.state,
+            content_plan.CreateContentPlan.waiting_for_provider,
+        )
+        self.assertIn("Выбери AI", message.answers[-1][0])
+
+    async def test_each_provider_is_saved_and_used_for_new_plan(self):
+        cases = (
+            (content_plan.OPENAI_PROVIDER_BUTTON, "openai"),
+            (content_plan.GEMINI_PROVIDER_BUTTON, "gemini"),
+            (content_plan.GROQ_PROVIDER_BUTTON, "groq"),
+        )
+
+        for button_text, provider in cases:
+            with self.subTest(provider=provider):
+                message = FakeMessage(button_text)
+                state = FakeState(
+                    data={
+                        "user_brief": "Тестовый бриф",
+                        "selected_client": None,
+                        "selected_ideas": [],
+                    },
+                    state=(
+                        content_plan.CreateContentPlan
+                        .waiting_for_provider
+                    ),
+                )
+
+                with (
+                    patch(
+                        "handlers.content_plan.build_content_plan_text",
+                        new=AsyncMock(return_value="Готовый план"),
+                    ) as build_content_plan_text,
+                    patch(
+                        "handlers.content_plan.load_post_ideas",
+                        return_value=[],
+                    ),
+                    patch(
+                        "storage.content_plans.read_content_plans",
+                        return_value=[],
+                    ),
+                    patch(
+                        "storage.content_plans.save_content_plans",
+                    ) as save_content_plans,
+                ):
+                    await content_plan.generate_new_content_plan(
+                        message,
+                        state,
+                    )
+
+                build_content_plan_text.assert_awaited_once_with(
+                    None,
+                    [],
+                    "Тестовый бриф",
+                    provider,
+                )
+                save_content_plans.assert_called_once_with(
+                    ["Готовый план"]
+                )
+                self.assertTrue(state.cleared)
+
+    async def test_provider_error_does_not_save_new_plan(self):
+        message = FakeMessage(content_plan.GROQ_PROVIDER_BUTTON)
+        state = FakeState(
+            data={
+                "user_brief": "Тестовый бриф",
+                "selected_client": None,
+                "selected_ideas": [],
+            },
+            state=content_plan.CreateContentPlan.waiting_for_provider,
+        )
+
+        with (
+            patch(
+                "handlers.content_plan.build_content_plan_text",
+                new=AsyncMock(
+                    side_effect=content_plan.ContentPlanGenerationError(
+                        "Groq сейчас не отвечает."
+                    )
+                ),
+            ),
+            patch("storage.content_plans.save_content_plans") as save_content_plans,
+        ):
+            await content_plan.generate_new_content_plan(message, state)
+
+        save_content_plans.assert_not_called()
+        self.assertTrue(state.cleared)
+        self.assertIn("Groq сейчас не отвечает.", message.answers[-1][0])
+
+    async def test_back_from_provider_selection_returns_to_brief(self):
+        message = FakeMessage(content_plan.BACK_BUTTON)
+        state = FakeState(
+            data={"user_brief": "Тестовый бриф"},
+            state=content_plan.CreateContentPlan.waiting_for_provider,
+        )
+
+        with patch(
+            "handlers.content_plan.ask_for_brief",
+            new=AsyncMock(),
+        ) as ask_for_brief:
+            await content_plan.back_to_create_brief(message, state)
+
+        self.assertEqual(
+            state.state,
+            content_plan.CreateContentPlan.waiting_for_brief,
+        )
+        self.assertEqual(state.data["user_brief"], "Тестовый бриф")
+        ask_for_brief.assert_awaited_once_with(message)
+
     async def test_search_is_case_insensitive_and_strips_query(self):
         plans = [
             "План для кофейни",
@@ -1848,15 +2017,16 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_edit_replaces_only_current_selected_plan(self):
         plans = ["Первый план", "Старый план", "Третий план"]
         updated_plan = "Обновлённый план"
-        message = FakeMessage("Новый бриф")
+        message = FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON)
         state = FakeState(
             data={
                 "content_plan_number": 2,
                 "selected_content_plan": plans[1],
                 "selected_client": None,
                 "selected_ideas": [],
+                "new_brief": "Новый бриф",
             },
-            state=content_plan.EditContentPlan.waiting_for_new_brief,
+            state=content_plan.EditContentPlan.waiting_for_provider,
         )
 
         with (
@@ -1876,7 +2046,7 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                 "storage.content_plans.save_content_plans"
             ) as save_content_plans,
         ):
-            await content_plan.edit_content_plan(
+            await content_plan.generate_edited_content_plan(
                 message,
                 state,
             )
@@ -2400,8 +2570,17 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_api_error_does_not_save_content_plan(self):
-        message = FakeMessage("Ниша: кофе; аудитория: жители города; цель: продажи")
-        state = FakeState()
+        message = FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON)
+        state = FakeState(
+            data={
+                "user_brief": (
+                    "Ниша: кофе; аудитория: жители города; цель: продажи"
+                ),
+                "selected_client": None,
+                "selected_ideas": [],
+            },
+            state=content_plan.CreateContentPlan.waiting_for_provider,
+        )
 
         with (
             patch(
@@ -2414,7 +2593,7 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("storage.content_plans.save_content_plans") as save_content_plans,
         ):
-            await content_plan.create_content_plan(message, state)
+            await content_plan.generate_new_content_plan(message, state)
 
         save_content_plans.assert_not_called()
         self.assertTrue(state.cleared)

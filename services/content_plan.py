@@ -53,6 +53,12 @@ class ContentPlanGenerationError(Exception):
     pass
 
 
+CONTENT_PLAN_AI_PROVIDERS = (
+    "openai",
+    "gemini",
+    "groq",
+)
+
 CONTENT_PLAN_SHORT_TITLE_MAX_LENGTH = 80
 CONTENT_PLAN_CLIENT_TITLE_MAX_LENGTH = 30
 
@@ -286,11 +292,8 @@ async def build_content_plan_text(
     client,
     selected_ideas,
     user_brief,
+    provider="openai",
 ):
-    from services import (
-        content_plan_openai as content_plan_openai_service,
-    )
-
     ai_brief = build_ai_brief(
         client,
         selected_ideas,
@@ -298,7 +301,8 @@ async def build_content_plan_text(
     )
 
     content_plan = await asyncio.to_thread(
-        content_plan_openai_service.generate_ai_content_plan,
+        generate_content_plan,
+        provider,
         ai_brief,
     )
 
@@ -312,6 +316,42 @@ async def build_content_plan_text(
         selected_ideas,
         user_brief,
         content_plan,
+    )
+
+
+def generate_content_plan(
+    provider: str,
+    brief: str,
+):
+    if provider == "openai":
+        from services import (
+            content_plan_openai as content_plan_openai_service,
+        )
+
+        return content_plan_openai_service.generate_ai_content_plan(
+            brief
+        )
+
+    if provider == "gemini":
+        from services import (
+            content_plan_gemini as content_plan_gemini_service,
+        )
+
+        return content_plan_gemini_service.generate_gemini_content_plan(
+            brief
+        )
+
+    if provider == "groq":
+        from services import (
+            content_plan_groq as content_plan_groq_service,
+        )
+
+        return content_plan_groq_service.generate_groq_content_plan(
+            brief
+        )
+
+    raise ValueError(
+        f"Неизвестный AI-provider: {provider}"
     )
 
 

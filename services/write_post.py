@@ -27,6 +27,12 @@ WRITE_POST_AI_CONTRACT = (
     "технических комментариев, объяснений процесса и JSON."
 )
 
+WRITE_POST_AI_PROVIDERS = (
+    "openai",
+    "gemini",
+    "groq",
+)
+
 
 def get_next_post_id(posts: list[Post]) -> int:
     if not posts:
@@ -215,88 +221,52 @@ def create_and_save_post(
     return post
 
 
-def create_and_save_gemini_post(
-    client_name: str,
-    client_context: Client | None,
+def generate_ai_post(
+    provider: str,
+    client_ai_context: str,
     topic: str,
     style: str,
-) -> Post:
-    from services import write_post_gemini
+) -> str:
+    if provider == "openai":
+        from services import write_post_openai
 
-    client_ai_context = build_client_ai_context(
-        client_context
-    )
-    generated_text = (
-        write_post_gemini.generate_gemini_post(
+        return write_post_openai.generate_openai_post(
             client_ai_context,
             topic,
             style,
         )
-    )
 
-    posts = posts_storage.load_posts()
-    post = build_post(
-        posts,
-        client_name,
-        client_context,
-        topic,
-        style,
-        text=generated_text,
-    )
+    if provider == "gemini":
+        from services import write_post_gemini
 
-    posts.append(post)
-    posts_storage.save_posts(posts)
-
-    return post
-
-
-def create_and_save_openai_post(
-    client_name: str,
-    client_context: Client | None,
-    topic: str,
-    style: str,
-) -> Post:
-    from services import write_post_openai
-
-    client_ai_context = build_client_ai_context(
-        client_context
-    )
-    generated_text = (
-        write_post_openai.generate_openai_post(
+        return write_post_gemini.generate_gemini_post(
             client_ai_context,
             topic,
             style,
         )
-    )
 
-    posts = posts_storage.load_posts()
-    post = build_post(
-        posts,
-        client_name,
-        client_context,
-        topic,
-        style,
-        text=generated_text,
-    )
+    if provider == "groq":
+        from services import write_post_groq
 
-    posts.append(post)
-    posts_storage.save_posts(posts)
+        return write_post_groq.generate_groq_post(
+            client_ai_context,
+            topic,
+            style,
+        )
 
-    return post
+    raise ValueError(f"Неизвестный AI-provider: {provider}")
 
 
-def create_and_save_groq_post(
+def create_and_save_ai_post(
+    provider: str,
     client_name: str,
     client_context: Client | None,
     topic: str,
     style: str,
 ) -> Post:
-    from services import write_post_groq
-
-    client_ai_context = build_client_ai_context(
-        client_context
-    )
-    generated_text = write_post_groq.generate_groq_post(
+    client_ai_context = build_client_ai_context(client_context)
+    generated_text = generate_ai_post(
+        provider,
         client_ai_context,
         topic,
         style,
@@ -316,6 +286,51 @@ def create_and_save_groq_post(
     posts_storage.save_posts(posts)
 
     return post
+
+
+def create_and_save_gemini_post(
+    client_name: str,
+    client_context: Client | None,
+    topic: str,
+    style: str,
+) -> Post:
+    return create_and_save_ai_post(
+        "gemini",
+        client_name,
+        client_context,
+        topic,
+        style,
+    )
+
+
+def create_and_save_openai_post(
+    client_name: str,
+    client_context: Client | None,
+    topic: str,
+    style: str,
+) -> Post:
+    return create_and_save_ai_post(
+        "openai",
+        client_name,
+        client_context,
+        topic,
+        style,
+    )
+
+
+def create_and_save_groq_post(
+    client_name: str,
+    client_context: Client | None,
+    topic: str,
+    style: str,
+) -> Post:
+    return create_and_save_ai_post(
+        "groq",
+        client_name,
+        client_context,
+        topic,
+        style,
+    )
 
 
 def find_posts(

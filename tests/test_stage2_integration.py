@@ -481,8 +481,9 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
             data={
                 "selected_client": None,
                 "selected_ideas": ["Выбранная идея"],
+                "user_brief": "Короткий бриф",
             },
-            state=content_plan.CreateContentPlan.waiting_for_brief,
+            state=content_plan.CreateContentPlan.waiting_for_provider,
         )
         save_content_plans = Mock()
 
@@ -490,10 +491,7 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 content_plan,
                 "load_post_ideas",
-                side_effect=[
-                    ["Выбранная идея"],
-                    [],
-                ],
+                return_value=[],
             ),
             patch.object(
                 content_plan,
@@ -506,8 +504,8 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 save_content_plans,
             ),
         ):
-            await content_plan.create_content_plan(
-                FakeMessage("Короткий бриф"),
+            await content_plan.generate_new_content_plan(
+                FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON),
                 state,
             )
 
@@ -525,24 +523,22 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 "selected_content_plan": selected_plan,
                 "selected_client": None,
                 "selected_ideas": ["Выбранная идея"],
+                "new_brief": "Новый бриф",
             },
-            state=content_plan.EditContentPlan.waiting_for_new_brief,
+            state=content_plan.EditContentPlan.waiting_for_provider,
         )
         save_content_plans = Mock()
 
         with (
             patch.object(
-                content_plan,
+                content_plan.content_plans_storage,
                 "read_content_plans",
                 return_value=[selected_plan],
             ),
             patch.object(
                 content_plan,
                 "load_post_ideas",
-                side_effect=[
-                    ["Выбранная идея"],
-                    [],
-                ],
+                return_value=[],
             ),
             patch.object(
                 content_plan,
@@ -555,8 +551,8 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 save_content_plans,
             ),
         ):
-            await content_plan.edit_content_plan(
-                FakeMessage("Новый бриф"),
+            await content_plan.generate_edited_content_plan(
+                FakeMessage(content_plan.OPENAI_PROVIDER_BUTTON),
                 state,
             )
 

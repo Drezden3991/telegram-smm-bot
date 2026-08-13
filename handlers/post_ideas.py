@@ -6,6 +6,7 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 from handlers.start import main_menu
 from services import post_ideas as post_ideas_service
+from storage import clients as clients_storage
 from storage import post_ideas as post_ideas_storage
 
 router = Router()
@@ -28,6 +29,21 @@ class EditPostIdea(StatesGroup):
     waiting_for_new_idea_text = State()
 
 
+class GeneratePostIdeas(StatesGroup):
+    waiting_for_client = State()
+    waiting_for_brief = State()
+    waiting_for_provider = State()
+    waiting_for_candidates = State()
+
+
+BACK_BUTTON = "⬅️ Назад"
+WITHOUT_CLIENT_BUTTON = "🚫 Без клиента"
+SAVE_SELECTED_IDEAS_BUTTON = "✅ Сохранить выбранные"
+OPENAI_PROVIDER_BUTTON = "OpenAI"
+GEMINI_PROVIDER_BUTTON = "Gemini"
+GROQ_PROVIDER_BUTTON = "Groq"
+
+
 post_ideas_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="💡 Получить идею")],
@@ -36,7 +52,8 @@ post_ideas_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="🗑 Удалить идею")],
         [KeyboardButton(text="🔍 Найти идею")],
         [KeyboardButton(text="✏️ Редактировать идею")],
-        [KeyboardButton(text="⬅️ Назад")],
+        [KeyboardButton(text="✨ Сгенерировать идеи")],
+        [KeyboardButton(text=BACK_BUTTON)],
     ],
     resize_keyboard=True,
 )
@@ -44,6 +61,94 @@ post_ideas_menu = ReplyKeyboardMarkup(
 
 def load_post_ideas():
     return post_ideas_storage.load_post_ideas()
+
+
+def load_clients():
+    return clients_storage.load_clients()
+
+
+def get_client_full_name(client):
+    return post_ideas_service.get_client_full_name(client)
+
+
+def create_ai_clients_menu(clients):
+    keyboard = [
+        [
+            KeyboardButton(
+                text=f"{number}. {get_client_full_name(client)}"
+            )
+        ]
+        for number, client in enumerate(clients, start=1)
+    ]
+    keyboard.append([KeyboardButton(text=WITHOUT_CLIENT_BUTTON)])
+    keyboard.append([KeyboardButton(text=BACK_BUTTON)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+    )
+
+
+def create_ai_provider_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=OPENAI_PROVIDER_BUTTON),
+                KeyboardButton(text=GEMINI_PROVIDER_BUTTON),
+                KeyboardButton(text=GROQ_PROVIDER_BUTTON),
+            ],
+            [KeyboardButton(text=BACK_BUTTON)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def get_selected_ai_provider(message_text):
+    providers = {
+        OPENAI_PROVIDER_BUTTON: "openai",
+        GEMINI_PROVIDER_BUTTON: "gemini",
+        GROQ_PROVIDER_BUTTON: "groq",
+    }
+
+    return providers.get(message_text)
+
+
+def create_ai_candidates_menu(candidates, selected_candidates):
+    keyboard = []
+
+    for number, candidate in enumerate(candidates, start=1):
+        prefix = "✅ " if candidate in selected_candidates else ""
+        keyboard.append(
+            [KeyboardButton(text=f"{prefix}{number}. {candidate}")]
+        )
+
+    keyboard.append([KeyboardButton(text=SAVE_SELECTED_IDEAS_BUTTON)])
+    keyboard.append([KeyboardButton(text=BACK_BUTTON)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+    )
+
+
+def get_selected_ai_candidate(message_text, candidates):
+    clean_text = message_text.removeprefix("✅ ")
+
+    for number, candidate in enumerate(candidates, start=1):
+        if clean_text == f"{number}. {candidate}":
+            return candidate
+
+    return None
+
+
+async def show_ai_client_selection(message):
+    clients = load_clients()
+
+    await message.answer(
+        "Выбери клиента для генерации идей "
+        "или создай идеи без клиента:",
+        reply_markup=create_ai_clients_menu(clients),
+    )
 
 
 def format_post_ideas_list(post_ideas):
@@ -124,8 +229,262 @@ async def random_post_idea(message: Message):
     idea = post_ideas_service.choose_random_post_idea(
         post_ideas
     )
-
     await message.answer(idea)
+
+
+@router.message(F.text == "✨ Сгенерировать идеи")
+async def start_ai_post_ideas(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await state.set_state(GeneratePostIdeas.waiting_for_client)
+    await show_ai_client_selection(message)
+
+
+@router.message(
+    GeneratePostIdeas.waiting_for_client,
+    F.text == BACK_BUTTON,
+)
+async def cancel_ai_client_selection(
+    message: Message,
+    state: FSMContext,
+):
+    await state.clear()
+    await message.answer(
+        "💡 Раздел «Идея постов»\n\nВыбери действие:",
+        reply_markup=post_ideas_menu,
+    )
+
+
+@router.message(GeneratePostIdeas.waiting_for_client)
+async def select_ai_client(
+    message: Message,
+    state: FSMContext,
+):
+    clients = load_clients()
+    selected_text = message.text.strip()
+
+    if selected_text == WITHOUT_CLIENT_BUTTON:
+        selected_client = None
+    else:
+        selected_client = None
+
+        for number, client in enumerate(clients, start=1):
+            if selected_text == f"{number}. {get_client_full_name(client)}":
+                selected_client = client
+                break
+
+        if selected_client is None:
+            await message.answer(
+                "Пожалуйста, выбери клиента кнопкой ниже.",
+                reply_markup=create_ai_clients_menu(clients),
+            )
+            return
+
+    await state.update_data(selected_client=selected_client)
+    await state.set_state(GeneratePostIdeas.waiting_for_brief)
+    await message.answer(
+        "Опиши, какие идеи нужны: тема, цель или задача.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BACK_BUTTON)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+@router.message(
+    GeneratePostIdeas.waiting_for_brief,
+    F.text == BACK_BUTTON,
+)
+async def back_to_ai_client_selection(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(GeneratePostIdeas.waiting_for_client)
+    await show_ai_client_selection(message)
+
+
+@router.message(GeneratePostIdeas.waiting_for_brief)
+async def get_ai_post_ideas_brief(
+    message: Message,
+    state: FSMContext,
+):
+    brief = message.text.strip()
+
+    if not brief:
+        await message.answer(
+            "Описание не может быть пустым. Напиши, какие идеи нужны:"
+        )
+        return
+
+    await state.update_data(ai_brief=brief)
+    await state.set_state(GeneratePostIdeas.waiting_for_provider)
+    await message.answer(
+        "Выбери AI для генерации идей:",
+        reply_markup=create_ai_provider_menu(),
+    )
+
+
+@router.message(
+    GeneratePostIdeas.waiting_for_provider,
+    F.text == BACK_BUTTON,
+)
+async def back_to_ai_brief(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(GeneratePostIdeas.waiting_for_brief)
+    await message.answer(
+        "Опиши, какие идеи нужны: тема, цель или задача.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BACK_BUTTON)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+@router.message(GeneratePostIdeas.waiting_for_provider)
+async def generate_ai_post_ideas(
+    message: Message,
+    state: FSMContext,
+):
+    provider = get_selected_ai_provider(message.text)
+
+    if provider is None:
+        await message.answer(
+            "Пожалуйста, выбери AI кнопкой ниже.",
+            reply_markup=create_ai_provider_menu(),
+        )
+        return
+
+    data = await state.get_data()
+    brief = data.get("ai_brief", "")
+
+    if not brief:
+        await state.set_state(GeneratePostIdeas.waiting_for_brief)
+        await message.answer(
+            "Описание не найдено. Напиши, какие идеи нужны:"
+        )
+        return
+
+    await state.update_data(ai_provider=provider)
+    await message.answer(
+        f"⏳ Генерирую идеи через {message.text}..."
+    )
+
+    try:
+        candidates = post_ideas_service.generate_post_idea_candidates(
+            data.get("selected_client"),
+            brief,
+            provider,
+        )
+    except post_ideas_service.PostIdeasGenerationError as error:
+        await state.clear()
+        await message.answer(
+            str(error),
+            reply_markup=post_ideas_menu,
+        )
+        return
+
+    await state.update_data(
+        ai_candidates=list(candidates),
+        selected_ai_candidates=[],
+    )
+    await state.set_state(GeneratePostIdeas.waiting_for_candidates)
+    await message.answer(
+        "Выбери идеи для сохранения, затем нажми «Сохранить выбранные».",
+        reply_markup=create_ai_candidates_menu(candidates, []),
+    )
+
+
+@router.message(
+    GeneratePostIdeas.waiting_for_candidates,
+    F.text == BACK_BUTTON,
+)
+async def back_to_ai_provider_selection(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(GeneratePostIdeas.waiting_for_provider)
+    await message.answer(
+        "Выбери AI для генерации идей:",
+        reply_markup=create_ai_provider_menu(),
+    )
+
+
+@router.message(
+    GeneratePostIdeas.waiting_for_candidates,
+    F.text == SAVE_SELECTED_IDEAS_BUTTON,
+)
+async def save_selected_ai_post_ideas(
+    message: Message,
+    state: FSMContext,
+):
+    data = await state.get_data()
+    selected_ideas = data.get("selected_ai_candidates", [])
+
+    if not selected_ideas:
+        await message.answer(
+            "Выбери хотя бы одну идею для сохранения.",
+            reply_markup=create_ai_candidates_menu(
+                data.get("ai_candidates", []),
+                selected_ideas,
+            ),
+        )
+        return
+
+    added_ideas, duplicate_ideas = (
+        post_ideas_service.save_selected_post_ideas(selected_ideas)
+    )
+    await state.clear()
+
+    if added_ideas:
+        result = "✅ Идеи сохранены:\n\n" + "\n".join(added_ideas)
+
+        if duplicate_ideas:
+            result += "\n\n⚠️ Уже были в списке:\n" + "\n".join(
+                duplicate_ideas
+            )
+    else:
+        result = "⚠️ Все выбранные идеи уже есть в списке."
+
+    await message.answer(result, reply_markup=post_ideas_menu)
+
+
+@router.message(GeneratePostIdeas.waiting_for_candidates)
+async def toggle_ai_post_idea_candidate(
+    message: Message,
+    state: FSMContext,
+):
+    data = await state.get_data()
+    candidates = data.get("ai_candidates", [])
+    selected_ideas = list(data.get("selected_ai_candidates", []))
+    candidate = get_selected_ai_candidate(message.text, candidates)
+
+    if candidate is None:
+        await message.answer(
+            "Пожалуйста, выбери идею кнопкой ниже.",
+            reply_markup=create_ai_candidates_menu(
+                candidates,
+                selected_ideas,
+            ),
+        )
+        return
+
+    if candidate in selected_ideas:
+        selected_ideas.remove(candidate)
+    else:
+        selected_ideas.append(candidate)
+
+    await state.update_data(selected_ai_candidates=selected_ideas)
+    await message.answer(
+        "Выбери идеи для сохранения, затем нажми «Сохранить выбранные».",
+        reply_markup=create_ai_candidates_menu(
+            candidates,
+            selected_ideas,
+        ),
+    )
 
 
 @router.message(F.text == "📋 Все идеи")

@@ -320,7 +320,7 @@ class PostIdeasGeminiServiceTests(unittest.TestCase):
             ) as load_post_ideas,
             patch.object(
                 post_ideas_service.post_ideas_storage,
-                "save_all_post_ideas",
+                "add_post_ideas",
             ) as save_post_ideas,
             patch.object(
                 post_ideas_gemini,
@@ -363,7 +363,7 @@ class PostIdeasGeminiServiceTests(unittest.TestCase):
             ) as load_post_ideas,
             patch.object(
                 post_ideas_service.post_ideas_storage,
-                "save_all_post_ideas",
+                "add_post_ideas",
             ) as save_post_ideas,
         ):
             added, duplicates = (
@@ -380,8 +380,6 @@ class PostIdeasGeminiServiceTests(unittest.TestCase):
         load_post_ideas.assert_called_once_with()
         save_post_ideas.assert_called_once_with(
             [
-                "💡 Существующая идея",
-                "💡 Другая идея",
                 "💡 Новая идея",
                 "💡 Ещё одна идея",
             ]
@@ -409,7 +407,7 @@ class PostIdeasGeminiServiceTests(unittest.TestCase):
             ) as load_post_ideas,
             patch.object(
                 post_ideas_service.post_ideas_storage,
-                "save_all_post_ideas",
+                "add_post_ideas",
             ) as save_post_ideas,
         ):
             added, duplicates = (

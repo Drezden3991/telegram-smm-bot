@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from handlers import write_post
 from services import write_post as write_post_service
 from storage import clients as clients_storage
+from storage import post_ideas as post_ideas_storage
 from storage import posts as posts_storage
 
 
@@ -31,6 +32,9 @@ class FakeState:
 
     async def get_data(self):
         return dict(self.data)
+
+    async def update_data(self, **kwargs):
+        self.data.update(kwargs)
 
     async def set_state(self, state):
         self.state = state
@@ -158,7 +162,7 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
 
         temporary_path = Path(self.temporary_directory.name)
         self.clients_file = temporary_path / "clients.txt"
-        self.ideas_file = temporary_path / "post_ideas.txt"
+        self.ideas_database = temporary_path / "post_ideas.db"
 
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
@@ -181,21 +185,12 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
                 )
             )
 
-        if hasattr(write_post, "IDEAS_FILE"):
-            self.file_patches.enter_context(
-                patch.object(
-                    write_post,
-                    "IDEAS_FILE",
-                    str(self.ideas_file),
-                )
-            )
-
         if hasattr(write_post, "post_ideas_storage"):
             self.file_patches.enter_context(
                 patch.object(
                     write_post.post_ideas_storage,
-                    "POST_IDEAS_FILE",
-                    str(self.ideas_file),
+                    "POST_IDEAS_DATABASE",
+                    str(self.ideas_database),
                 )
             )
 
@@ -259,9 +254,8 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
         )
 
     def test_load_ideas_returns_stripped_nonempty_ideas(self):
-        self.ideas_file.write_text(
-            "  💡 Первая идея  \n\nВторая идея\n",
-            encoding="utf-8",
+        post_ideas_storage.save_all_post_ideas(
+            ["💡 Первая идея", "Вторая идея"]
         )
 
         self.assertEqual(
@@ -270,11 +264,12 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
         )
 
     def test_load_ideas_excludes_lines_containing_back_button(self):
-        self.ideas_file.write_text(
-            "💡 Обычная идея\n"
-            "⬅️ Назад\n"
-            "Текст до ⬅️ Назад и после\n",
-            encoding="utf-8",
+        post_ideas_storage.save_all_post_ideas(
+            [
+                "💡 Обычная идея",
+                "⬅️ Назад",
+                "Текст до ⬅️ Назад и после",
+            ]
         )
 
         self.assertEqual(
@@ -610,6 +605,7 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
                 "client": "Иван Иванов",
                 "client_context": client_context,
                 "topic": "Как выбрать кофе",
+                "style": "Экспертный",
             }
         )
         message = FakeMessage("Экспертный")
@@ -617,7 +613,7 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
         with patch_post_persistence(
             existing_posts
         ) as (_, save_posts):
-            await write_post.create_post(message, state)
+            await write_post.create_template_post(message, state)
 
         save_posts.assert_called_once()
         saved_posts = save_posts.call_args.args[0]
@@ -665,12 +661,13 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
                 "client": "",
                 "client_context": None,
                 "topic": "Тема без клиента",
+                "style": "Информационный",
             }
         )
         message = FakeMessage("Информационный")
 
         with patch_post_persistence([]) as (_, save_posts):
-            await write_post.create_post(message, state)
+            await write_post.create_template_post(message, state)
 
         save_posts.assert_called_once()
         created_post = save_posts.call_args.args[0][-1]
@@ -708,7 +705,7 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(),
             ) as show_topic_selection,
         ):
-            await write_post.create_post(message, state)
+            await write_post.create_template_post(message, state)
 
         load_posts.assert_not_called()
         save_posts.assert_not_called()
@@ -733,7 +730,7 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
             load_posts,
             save_posts,
         ):
-            await write_post.create_post(message, state)
+            await write_post.select_post_style(message, state)
 
         load_posts.assert_not_called()
         save_posts.assert_not_called()
@@ -742,6 +739,226 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
             message.answers[-1][0],
             "Пожалуйста, выбери стиль кнопкой ниже:",
         )
+
+
+class WritePostAiDispatcherTests(unittest.TestCase):
+    def test_dispatcher_uses_selected_provider(self):
+        cases = (
+            (
+                "openai",
+                "services.write_post_openai.generate_openai_post",
+            ),
+            (
+                "gemini",
+                "services.write_post_gemini.generate_gemini_post",
+            ),
+            (
+                "groq",
+                "services.write_post_groq.generate_groq_post",
+            ),
+        )
+
+        for provider, target in cases:
+            with self.subTest(provider=provider), patch(
+                target,
+                return_value="AI-текст",
+            ) as generate:
+                result = write_post_service.generate_ai_post(
+                    provider,
+                    "Контекст",
+                    "Тема",
+                    "Дружелюбный",
+                )
+
+            self.assertEqual(result, "AI-текст")
+            generate.assert_called_once_with(
+                "Контекст",
+                "Тема",
+                "Дружелюбный",
+            )
+
+    def test_dispatcher_rejects_unknown_provider(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "Неизвестный AI-provider",
+        ):
+            write_post_service.generate_ai_post(
+                "unknown",
+                "Контекст",
+                "Тема",
+                "Дружелюбный",
+            )
+
+    def test_generation_error_does_not_load_or_save_posts(self):
+        error = write_post_service.WritePostGenerationError(
+            "Gemini сейчас не отвечает."
+        )
+
+        with (
+            patch.object(
+                write_post_service,
+                "generate_ai_post",
+                side_effect=error,
+            ),
+            patch.object(
+                write_post_service.posts_storage,
+                "load_posts",
+            ) as load_posts,
+            patch.object(
+                write_post_service.posts_storage,
+                "save_posts",
+            ) as save_posts,
+        ):
+            with self.assertRaises(
+                write_post_service.WritePostGenerationError
+            ):
+                write_post_service.create_and_save_ai_post(
+                    "gemini",
+                    "Иван Иванов",
+                    {"name": "Иван", "last_name": "Иванов"},
+                    "Тема",
+                    "Дружелюбный",
+                )
+
+        load_posts.assert_not_called()
+        save_posts.assert_not_called()
+
+    def test_successful_generation_creates_and_saves_post_once(self):
+        posts = [{"id": 4, "text": "Старый пост"}]
+        save_posts = Mock()
+
+        with (
+            patch.object(
+                write_post_service,
+                "generate_ai_post",
+                return_value="AI-текст",
+            ) as generate,
+            patch.object(
+                write_post_service.posts_storage,
+                "load_posts",
+                return_value=posts,
+            ),
+            patch.object(
+                write_post_service.posts_storage,
+                "save_posts",
+                save_posts,
+            ),
+        ):
+            post = write_post_service.create_and_save_ai_post(
+                "openai",
+                "Иван Иванов",
+                {"name": "Иван", "last_name": "Иванов"},
+                "Тема",
+                "Дружелюбный",
+            )
+
+        generate.assert_called_once_with(
+            "openai",
+            "Название или имя клиента: Иван Иванов",
+            "Тема",
+            "Дружелюбный",
+        )
+        self.assertEqual(post["id"], 5)
+        self.assertEqual(post["text"], "AI-текст")
+        save_posts.assert_called_once_with(posts)
+
+
+class WritePostAiHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_style_opens_compact_method_selection(self):
+        message = FakeMessage("Дружелюбный")
+        state = FakeState(data={"topic": "Тема"})
+
+        await write_post.select_post_style(message, state)
+
+        self.assertEqual(state.data["style"], "Дружелюбный")
+        self.assertIs(
+            state.state,
+            write_post.WritePost.waiting_for_provider,
+        )
+        self.assertIn(
+            "Выбери способ создания поста",
+            message.answers[-1][0],
+        )
+
+    async def test_each_provider_is_saved_and_used(self):
+        cases = (
+            (write_post.OPENAI_PROVIDER_BUTTON, "openai"),
+            (write_post.GEMINI_PROVIDER_BUTTON, "gemini"),
+            (write_post.GROQ_PROVIDER_BUTTON, "groq"),
+        )
+
+        for button_text, provider in cases:
+            with self.subTest(provider=provider):
+                message = FakeMessage(button_text)
+                state = FakeState(
+                    data={
+                        "client": "Иван Иванов",
+                        "client_context": {"name": "Иван"},
+                        "topic": "Тема",
+                        "style": "Дружелюбный",
+                    }
+                )
+                post = {
+                    "id": 1,
+                    "client": "Иван Иванов",
+                    "client_context": {"name": "Иван"},
+                    "topic": "Тема",
+                    "style": "Дружелюбный",
+                    "text": "AI-текст",
+                }
+
+                with patch.object(
+                    write_post.write_post_service,
+                    "create_and_save_ai_post",
+                    return_value=post,
+                ) as create:
+                    await write_post.create_ai_post(message, state)
+
+                self.assertEqual(state.data["ai_provider"], provider)
+                create.assert_called_once_with(
+                    provider,
+                    "Иван Иванов",
+                    {"name": "Иван"},
+                    "Тема",
+                    "Дружелюбный",
+                )
+                self.assertTrue(state.cleared)
+
+    async def test_provider_error_does_not_create_post(self):
+        message = FakeMessage(write_post.GROQ_PROVIDER_BUTTON)
+        state = FakeState(
+            data={
+                "topic": "Тема",
+                "style": "Дружелюбный",
+            }
+        )
+        error = write_post_service.WritePostGenerationError(
+            "Groq сейчас не отвечает."
+        )
+
+        with patch.object(
+            write_post.write_post_service,
+            "create_and_save_ai_post",
+            side_effect=error,
+        ) as create:
+            await write_post.create_ai_post(message, state)
+
+        create.assert_called_once()
+        self.assertTrue(state.cleared)
+        self.assertIn("Groq сейчас не отвечает.", message.answers[-1][0])
+
+    async def test_back_from_provider_selection_returns_to_style(self):
+        message = FakeMessage(write_post.BACK_BUTTON)
+        state = FakeState(data={"style": "Экспертный"})
+
+        await write_post.back_from_post_method(message, state)
+
+        self.assertIs(
+            state.state,
+            write_post.WritePost.waiting_for_style,
+        )
+        self.assertEqual(
+            message.answers[-1][0], "Выбери стиль поста:")
 
 
 if __name__ == "__main__":
