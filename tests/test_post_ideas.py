@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,6 +13,7 @@ from storage import post_ideas as post_ideas_storage
 class FakeMessage:
     def __init__(self, text=""):
         self.text = text
+        self.from_user = SimpleNamespace(id=None)
         self.answers = []
 
     async def answer(self, text, **kwargs):

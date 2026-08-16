@@ -41,6 +41,15 @@ POST_IDEAS_AI_PROVIDERS = (
 )
 
 
+def _load_post_ideas_for_user(
+    telegram_user_id: int | None,
+) -> list[str]:
+    if telegram_user_id is None:
+        return post_ideas_storage.load_post_ideas()
+
+    return post_ideas_storage.load_post_ideas(telegram_user_id)
+
+
 def get_client_full_name(client: Client) -> str:
     name = client.get("name", "").strip()
     last_name = client.get("last_name", "").strip()
@@ -194,16 +203,19 @@ def prepare_post_idea_edit(
     return IDEA_OPERATION_READY, formatted_idea, updated_post_ideas
 
 
-def create_post_idea(idea):
-    post_ideas = post_ideas_storage.load_post_ideas()
+def create_post_idea(idea, telegram_user_id: int | None = None):
+    post_ideas = _load_post_ideas_for_user(telegram_user_id)
 
     if post_idea_exists(idea, post_ideas):
         return IDEA_DUPLICATE, None
 
     formatted_idea = format_post_idea(idea)
-    post_ideas_storage.add_post_idea_to_file(
-        formatted_idea
-    )
+    if telegram_user_id is None:
+        post_ideas_storage.add_post_idea_to_file(formatted_idea)
+    else:
+        post_ideas_storage.add_post_idea_to_file(
+            formatted_idea, telegram_user_id
+        )
 
     return IDEA_OPERATION_READY, formatted_idea
 
@@ -212,10 +224,9 @@ def generate_post_idea_candidates(
     client: Client | None,
     brief: str,
     provider: str = "gemini",
+    telegram_user_id: int | None = None,
 ) -> list[str]:
-    existing_ideas = (
-        post_ideas_storage.load_post_ideas()
-    )
+    existing_ideas = _load_post_ideas_for_user(telegram_user_id)
     client_ai_context = build_client_ai_context(client)
     generated_ideas = generate_post_ideas(
         provider,
@@ -266,29 +277,34 @@ def generate_post_ideas(
 def generate_openai_post_idea_candidates(
     client: Client | None,
     brief: str,
+    telegram_user_id: int | None = None,
 ) -> list[str]:
     return generate_post_idea_candidates(
         client,
         brief,
         provider="openai",
+        telegram_user_id=telegram_user_id,
     )
 
 
 def generate_groq_post_idea_candidates(
     client: Client | None,
     brief: str,
+    telegram_user_id: int | None = None,
 ) -> list[str]:
     return generate_post_idea_candidates(
         client,
         brief,
         provider="groq",
+        telegram_user_id=telegram_user_id,
     )
 
 
 def save_selected_post_ideas(
     selected_ideas: list[str],
+    telegram_user_id: int | None = None,
 ) -> tuple[list[str], list[str]]:
-    post_ideas = post_ideas_storage.load_post_ideas()
+    post_ideas = _load_post_ideas_for_user(telegram_user_id)
     updated_post_ideas = list(post_ideas)
     added_ideas = []
     duplicate_ideas = []
@@ -307,7 +323,12 @@ def save_selected_post_ideas(
         added_ideas.append(formatted_idea)
 
     if added_ideas:
-        post_ideas_storage.add_post_ideas(added_ideas)
+        if telegram_user_id is None:
+            post_ideas_storage.add_post_ideas(added_ideas)
+        else:
+            post_ideas_storage.add_post_ideas(
+                added_ideas, telegram_user_id
+            )
 
     return added_ideas, duplicate_ideas
 
@@ -315,8 +336,9 @@ def save_selected_post_ideas(
 def delete_post_idea(
     number_text,
     displayed_post_ideas=None,
+    telegram_user_id: int | None = None,
 ):
-    current_post_ideas = post_ideas_storage.load_post_ideas()
+    current_post_ideas = _load_post_ideas_for_user(telegram_user_id)
 
     if displayed_post_ideas is None:
         displayed_post_ideas = current_post_ideas
@@ -344,9 +366,12 @@ def delete_post_idea(
             current_post_ideas,
         )
 
-    post_ideas_storage.delete_post_idea_by_position(
-        idea_number
-    )
+    if telegram_user_id is None:
+        post_ideas_storage.delete_post_idea_by_position(idea_number)
+    else:
+        post_ideas_storage.delete_post_idea_by_position(
+            idea_number, telegram_user_id
+        )
     formatted_remaining_post_ideas = [
         format_post_idea(idea)
         for index, idea in enumerate(current_post_ideas, start=1)
@@ -364,8 +389,9 @@ def edit_post_idea(
     idea_number,
     selected_idea,
     new_idea,
+    telegram_user_id: int | None = None,
 ):
-    current_post_ideas = post_ideas_storage.load_post_ideas()
+    current_post_ideas = _load_post_ideas_for_user(telegram_user_id)
 
     if not is_current_post_idea_selection(
         current_post_ideas,
@@ -400,10 +426,14 @@ def edit_post_idea(
         format_post_idea(idea)
         for idea in updated_post_ideas
     ]
-    post_ideas_storage.update_post_idea_by_position(
-        idea_number,
-        formatted_idea,
-    )
+    if telegram_user_id is None:
+        post_ideas_storage.update_post_idea_by_position(
+            idea_number, formatted_idea
+        )
+    else:
+        post_ideas_storage.update_post_idea_by_position(
+            idea_number, formatted_idea, telegram_user_id
+        )
 
     return (
         IDEA_OPERATION_READY,

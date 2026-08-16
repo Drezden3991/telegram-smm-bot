@@ -286,7 +286,7 @@ class WritePostGeminiServiceTests(unittest.TestCase):
             {"id": "100", "text": "Старый ID"},
         ]
         original_posts = list(existing_posts)
-        save_posts = Mock()
+        add_post = Mock()
 
         with (
             patch.object(
@@ -301,8 +301,8 @@ class WritePostGeminiServiceTests(unittest.TestCase):
             ),
             patch.object(
                 write_post_service.posts_storage,
-                "save_posts",
-                save_posts,
+                "add_post",
+                add_post,
             ),
         ):
             post = (
@@ -332,8 +332,8 @@ class WritePostGeminiServiceTests(unittest.TestCase):
                 "text": "AI-текст",
             },
         )
-        self.assertEqual(existing_posts[:-1], original_posts)
-        save_posts.assert_called_once_with(existing_posts)
+        self.assertEqual(existing_posts, original_posts)
+        add_post.assert_called_once_with(post)
 
     def test_generation_error_does_not_load_or_save_posts(self):
         generation_error = (
@@ -354,8 +354,8 @@ class WritePostGeminiServiceTests(unittest.TestCase):
             ) as load_posts,
             patch.object(
                 write_post_service.posts_storage,
-                "save_posts",
-            ) as save_posts,
+                "add_post",
+            ) as add_post,
         ):
             with self.assertRaises(
                 write_post_service.WritePostGenerationError
@@ -369,7 +369,7 @@ class WritePostGeminiServiceTests(unittest.TestCase):
 
         self.assertIs(context.exception, generation_error)
         load_posts.assert_not_called()
-        save_posts.assert_not_called()
+        add_post.assert_not_called()
 
 
 if __name__ == "__main__":

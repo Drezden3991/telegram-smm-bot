@@ -266,7 +266,7 @@ class GroqWritePostServiceTests(unittest.TestCase):
                 "text": "Старый текст",
             }
         ]
-        save_posts = Mock()
+        add_post = Mock()
 
         with (
             patch.object(
@@ -281,8 +281,8 @@ class GroqWritePostServiceTests(unittest.TestCase):
             ),
             patch.object(
                 write_post_service.posts_storage,
-                "save_posts",
-                save_posts,
+                "add_post",
+                add_post,
             ),
         ):
             post = write_post_service.create_and_save_groq_post(
@@ -310,7 +310,7 @@ class GroqWritePostServiceTests(unittest.TestCase):
                 "text": "AI-текст",
             },
         )
-        save_posts.assert_called_once_with(existing_posts)
+        add_post.assert_called_once_with(post)
 
     def test_generation_error_does_not_load_or_save_posts(self):
         error = write_post_service.WritePostGenerationError(
@@ -327,8 +327,8 @@ class GroqWritePostServiceTests(unittest.TestCase):
                 write_post_service.posts_storage, "load_posts"
             ) as load_posts,
             patch.object(
-                write_post_service.posts_storage, "save_posts"
-            ) as save_posts,
+                write_post_service.posts_storage, "add_post"
+            ) as add_post,
         ):
             with self.assertRaises(
                 write_post_service.WritePostGenerationError
@@ -342,7 +342,7 @@ class GroqWritePostServiceTests(unittest.TestCase):
 
         self.assertIs(context.exception, error)
         load_posts.assert_not_called()
-        save_posts.assert_not_called()
+        add_post.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -205,8 +205,9 @@ def create_and_save_post(
     client_context: Client | None,
     topic: str,
     style: str,
+    telegram_user_id: int | None = None,
 ) -> Post:
-    posts = posts_storage.load_posts()
+    posts = posts_storage.load_posts(telegram_user_id)
     post = build_post(
         posts,
         client_name,
@@ -215,8 +216,13 @@ def create_and_save_post(
         style,
     )
 
-    posts.append(post)
-    posts_storage.save_posts(posts)
+    stored_post_id = (
+        posts_storage.add_post(post)
+        if telegram_user_id is None
+        else posts_storage.add_post(post, telegram_user_id)
+    )
+    if isinstance(stored_post_id, int):
+        post["id"] = stored_post_id
 
     return post
 
@@ -263,6 +269,7 @@ def create_and_save_ai_post(
     client_context: Client | None,
     topic: str,
     style: str,
+    telegram_user_id: int | None = None,
 ) -> Post:
     client_ai_context = build_client_ai_context(client_context)
     generated_text = generate_ai_post(
@@ -272,7 +279,7 @@ def create_and_save_ai_post(
         style,
     )
 
-    posts = posts_storage.load_posts()
+    posts = posts_storage.load_posts(telegram_user_id)
     post = build_post(
         posts,
         client_name,
@@ -282,8 +289,13 @@ def create_and_save_ai_post(
         text=generated_text,
     )
 
-    posts.append(post)
-    posts_storage.save_posts(posts)
+    stored_post_id = (
+        posts_storage.add_post(post)
+        if telegram_user_id is None
+        else posts_storage.add_post(post, telegram_user_id)
+    )
+    if isinstance(stored_post_id, int):
+        post["id"] = stored_post_id
 
     return post
 
@@ -293,6 +305,7 @@ def create_and_save_gemini_post(
     client_context: Client | None,
     topic: str,
     style: str,
+    telegram_user_id: int | None = None,
 ) -> Post:
     return create_and_save_ai_post(
         "gemini",
@@ -300,6 +313,7 @@ def create_and_save_gemini_post(
         client_context,
         topic,
         style,
+        telegram_user_id,
     )
 
 
@@ -308,6 +322,7 @@ def create_and_save_openai_post(
     client_context: Client | None,
     topic: str,
     style: str,
+    telegram_user_id: int | None = None,
 ) -> Post:
     return create_and_save_ai_post(
         "openai",
@@ -315,6 +330,7 @@ def create_and_save_openai_post(
         client_context,
         topic,
         style,
+        telegram_user_id,
     )
 
 
@@ -323,6 +339,7 @@ def create_and_save_groq_post(
     client_context: Client | None,
     topic: str,
     style: str,
+    telegram_user_id: int | None = None,
 ) -> Post:
     return create_and_save_ai_post(
         "groq",
@@ -330,6 +347,7 @@ def create_and_save_groq_post(
         client_context,
         topic,
         style,
+        telegram_user_id,
     )
 
 
@@ -376,8 +394,11 @@ def prepare_post_deletion(
     return post_was_deleted, updated_posts
 
 
-def delete_post(post_id: int) -> tuple[bool, Post | None]:
-    posts = posts_storage.load_posts()
+def delete_post(
+    post_id: int,
+    telegram_user_id: int | None = None,
+) -> tuple[bool, Post | None]:
+    posts = posts_storage.load_posts(telegram_user_id)
     deleted_post = next(
         (post for post in posts if post.get("id") == post_id),
         None,
@@ -390,6 +411,9 @@ def delete_post(post_id: int) -> tuple[bool, Post | None]:
     if not post_was_deleted:
         return False, None
 
-    posts_storage.save_posts(updated_posts)
+    if telegram_user_id is None:
+        posts_storage.delete_post_by_id(post_id)
+    else:
+        posts_storage.delete_post_by_id(post_id, telegram_user_id)
 
     return True, deleted_post

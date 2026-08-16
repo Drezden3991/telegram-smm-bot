@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily SMM Bot SQLite backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+Unit=smm-bot-backup.service
+
+[Install]
+WantedBy=timers.target

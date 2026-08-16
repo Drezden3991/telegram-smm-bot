@@ -54,21 +54,31 @@ edit_fields_menu = ReplyKeyboardMarkup(
 )
 
 
-def load_clients():
-    return clients_service.load_clients()
+def load_clients(telegram_user_id):
+    return clients_service.load_clients(telegram_user_id)
 
 
-def find_client_by_full_name(name, last_name):
+def find_client_by_full_name(
+    name,
+    last_name,
+    telegram_user_id=None,
+):
     return clients_service.get_client_by_full_name(
         name,
         last_name,
+        telegram_user_id,
     )
 
 
-def client_exists(name, last_name):
+def client_exists(
+    name,
+    last_name,
+    telegram_user_id=None,
+):
     return clients_service.current_client_exists(
         name,
         last_name,
+        telegram_user_id,
     )
 
 
@@ -138,7 +148,7 @@ async def show_clients(
     state: FSMContext,
 ):
     await state.clear()
-    clients = load_clients()
+    clients = load_clients(message.from_user.id)
 
     if clients:
         await message.answer(format_clients_list("📋 Список клиентов:", clients))
@@ -227,7 +237,11 @@ async def handle_client_text(
         new_client = data.get("new_client", {})
         new_client["last_name"] = message.text
 
-        if client_exists(new_client["name"], new_client["last_name"]):
+        if client_exists(
+            new_client["name"],
+            new_client["last_name"],
+            message.from_user.id,
+        ):
             await state.clear()
 
             await message.answer("Такой клиент уже существует.")
@@ -268,9 +282,13 @@ async def handle_client_text(
         new_client = data.get("new_client", {})
         new_client["notes"] = message.text
 
-        creation_status = clients_service.create_client(
-            new_client
-        )
+        if message.from_user.id is None:
+            creation_status = clients_service.create_client(new_client)
+        else:
+            creation_status = clients_service.create_client(
+                new_client,
+                message.from_user.id,
+            )
 
         full_name = f"{new_client['name']} {new_client['last_name']}"
 
@@ -289,7 +307,11 @@ async def handle_client_text(
         else:
             name = parts[0]
             last_name = parts[1]
-            client = find_client_by_full_name(name, last_name)
+            client = find_client_by_full_name(
+                name,
+                last_name,
+                message.from_user.id,
+            )
 
             if client:
                 await message.answer(format_client_card(client))
@@ -309,6 +331,7 @@ async def handle_client_text(
             deletion_status = clients_service.delete_client(
                 name,
                 last_name,
+                message.from_user.id,
             )
 
             if deletion_status == clients_service.CLIENT_DELETED:
@@ -326,7 +349,11 @@ async def handle_client_text(
         else:
             name = parts[0]
             last_name = parts[1]
-            client = find_client_by_full_name(name, last_name)
+            client = find_client_by_full_name(
+                name,
+                last_name,
+                message.from_user.id,
+            )
 
             if client:
                 await state.update_data(
@@ -373,6 +400,7 @@ async def handle_client_text(
             client_last_name,
             field_to_edit,
             new_value,
+            message.from_user.id,
         )
 
         if edit_status == clients_service.CLIENT_DUPLICATE:
@@ -403,7 +431,8 @@ async def handle_client_text(
 
     elif current_state == ClientFlow.waiting_for_search.state:
         found_clients = clients_service.search_clients(
-            message.text
+            message.text,
+            message.from_user.id,
         )
 
         await state.clear()

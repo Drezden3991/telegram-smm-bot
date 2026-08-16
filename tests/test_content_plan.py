@@ -49,6 +49,7 @@ def make_stored_plan(client_name="", brief="Продвижение кофейн�
 class FakeMessage:
     def __init__(self, text):
         self.text = text
+        self.from_user = SimpleNamespace(id=None)
         self.answers = []
 
     async def answer(self, text, **kwargs):
@@ -99,17 +100,17 @@ class ContentPlanStorageTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
 
-        self.content_plans_file = Path(
-            self.temporary_directory.name
-        ) / "content_plans.txt"
+        temporary_path = Path(self.temporary_directory.name)
+        self.content_plans_database = temporary_path / "content_plans.db"
+        self.content_plans_file = temporary_path / "content_plans.txt"
 
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
         self.file_patches.enter_context(
             patch.object(
                 content_plans_storage,
-                "CONTENT_PLANS_FILE",
-                str(self.content_plans_file),
+                "CONTENT_PLANS_DATABASE",
+                str(self.content_plans_database),
             )
         )
 
@@ -135,6 +136,9 @@ class ContentPlanStorageTests(unittest.TestCase):
             f"План 1\n{separator}\nПлан 2\n{separator}\n",
             encoding="utf-8",
         )
+        content_plans_storage.migrate_content_plans_from_txt(
+            self.content_plans_file
+        )
 
         self.assertEqual(
             content_plan.read_content_plans(),
@@ -152,20 +156,23 @@ class ContentPlanStorageTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        content_plans_storage.migrate_content_plans_from_txt(
+            self.content_plans_file
+        )
 
         self.assertEqual(
             content_plan.read_content_plans(),
             ["План 1", "План 2"],
         )
 
-    def test_save_uses_exact_forty_hyphen_separator(self):
+    def test_save_uses_database_and_preserves_separator_for_migration(self):
         content_plans_storage.save_content_plans(["План"])
 
         separator = "-" * 40
         self.assertEqual(content_plans_storage.SEPARATOR, separator)
         self.assertEqual(
-            self.content_plans_file.read_text(encoding="utf-8"),
-            f"План\n{separator}\n",
+            content_plans_storage.read_content_plans(),
+            ["План"],
         )
 
     def test_save_strips_outer_whitespace_from_each_plan(self):
@@ -173,39 +180,25 @@ class ContentPlanStorageTests(unittest.TestCase):
             [" \nПлан 1\n ", "\tПлан 2\t"]
         )
 
+        self.assertEqual(
+            content_plans_storage.read_content_plans(),
+            ["План 1", "План 2"],
+        )
+
+    def test_txt_migration_parser_accepts_trailing_separator(self):
         separator = content_plans_storage.SEPARATOR
         self.assertEqual(
-            self.content_plans_file.read_text(encoding="utf-8"),
-            (
-                f"План 1\n{separator}\n"
-                f"План 2\n{separator}\n"
+            content_plans_storage._content_plans_from_text(
+                f"Последний план\n{separator}\n"
             ),
+            ["Последний план"],
         )
 
-    def test_save_adds_trailing_separator_after_last_plan(self):
+    def test_save_empty_list_clears_database(self):
         content_plans_storage.save_content_plans(["Последний план"])
-
-        saved_content = self.content_plans_file.read_text(
-            encoding="utf-8"
-        )
-        self.assertTrue(
-            saved_content.endswith(
-                f"{content_plans_storage.SEPARATOR}\n"
-            )
-        )
-
-    def test_save_empty_list_clears_file(self):
-        self.content_plans_file.write_text(
-            "Старые данные",
-            encoding="utf-8",
-        )
-
         content_plans_storage.save_content_plans([])
 
-        self.assertEqual(
-            self.content_plans_file.read_text(encoding="utf-8"),
-            "",
-        )
+        self.assertEqual(content_plans_storage.read_content_plans(), [])
 
     def test_saved_plans_can_be_read_without_changes(self):
         plans = [
@@ -227,16 +220,18 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
 
         temporary_path = Path(self.temporary_directory.name)
-        self.clients_file = temporary_path / "clients.txt"
+        self.clients_database = temporary_path / "clients.db"
         self.post_ideas_database = temporary_path / "post_ideas.db"
 
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
 
-        self._patch_file_path(
-            "CLIENTS_FILE",
-            "clients_storage",
-            self.clients_file,
+        self.file_patches.enter_context(
+            patch.object(
+                content_plan.clients_storage,
+                "CLIENTS_DATABASE",
+                str(self.clients_database),
+            )
         )
         self.file_patches.enter_context(
             patch.object(
@@ -312,15 +307,18 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
             },
         )
 
-    def test_load_clients_preserves_current_file_behavior(self):
-        self.clients_file.write_text(
-            (
-                "Иван | Иванов | +372 | @ivan | "
-                "ivan@example.com | Новый формат\n"
-                "Анна | +371 | @anna | "
-                "anna@example.com | Старый формат\n"
-            ),
-            encoding="utf-8",
+    def test_load_clients_preserves_current_storage_behavior(self):
+        clients_storage.save_clients(
+            [
+                clients_storage.create_client_from_line(
+                    "Иван | Иванов | +372 | @ivan | "
+                    "ivan@example.com | Новый формат"
+                ),
+                clients_storage.create_client_from_line(
+                    "Анна | +371 | @anna | "
+                    "anna@example.com | Старый формат"
+                ),
+            ]
         )
 
         self.assertEqual(
@@ -345,18 +343,17 @@ class ContentPlanSharedStorageCompatibilityTests(unittest.TestCase):
             ],
         )
 
-    def test_load_clients_returns_empty_for_missing_file(self):
+    def test_load_clients_returns_empty_for_new_database(self):
         self.assertEqual(content_plan.load_clients(), [])
 
-    def test_load_clients_skips_blank_lines(self):
-        self.clients_file.write_text(
-            (
-                "\n   \n"
-                "Иван | Иванов | +372 | @ivan | "
-                "ivan@example.com | Заметка\n"
-                "\t\n"
-            ),
-            encoding="utf-8",
+    def test_load_clients_returns_saved_clients(self):
+        clients_storage.save_clients(
+            [
+                clients_storage.create_client_from_line(
+                    "Иван | Иванов | +372 | @ivan | "
+                    "ivan@example.com | Заметка"
+                )
+            ]
         )
 
         loaded_clients = content_plan.load_clients()
@@ -1528,6 +1525,10 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
+                "handlers.content_plan.is_ai_provider_configured",
+                return_value=True,
+            ),
+            patch(
                 "handlers.content_plan.load_post_ideas",
                 side_effect=[[], []],
             ),
@@ -1540,19 +1541,13 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=list(existing_plans),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.add_content_plan"
+            ) as add_content_plan,
         ):
             await content_plan.generate_new_content_plan(message, state)
 
-        save_content_plans.assert_called_once_with(
-            [*existing_plans, new_plan]
-        )
+        add_content_plan.assert_called_once_with(new_plan)
         self.assertEqual(existing_plans, existing_plans_snapshot)
-        self.assertEqual(
-            save_content_plans.call_args.args[0][-1],
-            new_plan,
-        )
 
     async def test_delete_existing_plan_saves_remaining_plans_once(self):
         plans = ["Первый план", "Удаляемый план", "Третий план"]
@@ -1571,14 +1566,12 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=list(plans),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.delete_content_plan_by_position"
+            ) as delete_content_plan_by_position,
         ):
             await content_plan.confirm_delete_content_plan(message, state)
 
-        save_content_plans.assert_called_once_with(
-            [plans[0], plans[2]]
-        )
+        delete_content_plan_by_position.assert_called_once_with(2)
 
     async def test_delete_stale_selection_does_not_save(self):
         selected_plan = "Старый вариант"
@@ -1598,12 +1591,12 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=current_plans,
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.delete_content_plan_by_position"
+            ) as delete_content_plan_by_position,
         ):
             await content_plan.confirm_delete_content_plan(message, state)
 
-        save_content_plans.assert_not_called()
+        delete_content_plan_by_position.assert_not_called()
 
     async def test_delete_invalid_selection_does_not_save(self):
         plans = ["Единственный план"]
@@ -1628,15 +1621,15 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                         return_value=list(plans),
                     ),
                     patch(
-                        "storage.content_plans.save_content_plans"
-                    ) as save_content_plans,
+                        "storage.content_plans.delete_content_plan_by_position"
+                    ) as delete_content_plan_by_position,
                 ):
                     await content_plan.confirm_delete_content_plan(
                         message,
                         state,
                     )
 
-                save_content_plans.assert_not_called()
+                delete_content_plan_by_position.assert_not_called()
 
     async def test_replace_selected_plan_preserves_order_and_saves_once(self):
         plans = ["Первый план", "Старый план", "Третий план"]
@@ -1667,16 +1660,13 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=updated_plan),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.update_content_plan_by_position"
+            ) as update_content_plan_by_position,
         ):
             await content_plan.generate_edited_content_plan(message, state)
 
-        save_content_plans.assert_called_once_with(
-            [plans[0], updated_plan, plans[2]]
-        )
-        self.assertEqual(
-            save_content_plans.call_args.args[0][1],
+        update_content_plan_by_position.assert_called_once_with(
+            2,
             updated_plan,
         )
 
@@ -1710,12 +1700,12 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=updated_plan),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.update_content_plan_by_position"
+            ) as update_content_plan_by_position,
         ):
             await content_plan.edit_content_plan(message, state)
 
-        save_content_plans.assert_not_called()
+        update_content_plan_by_position.assert_not_called()
 
     async def test_replace_invalid_selection_does_not_save(self):
         plans = ["Первый план"]
@@ -1743,14 +1733,14 @@ class ContentPlanPersistenceOperationTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(),
             ) as build_content_plan_text,
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.update_content_plan_by_position"
+            ) as update_content_plan_by_position,
         ):
             await content_plan.edit_content_plan(message, state)
 
         load_post_ideas.assert_not_called()
         build_content_plan_text.assert_not_awaited()
-        save_content_plans.assert_not_called()
+        update_content_plan_by_position.assert_not_called()
 
 
 class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -1775,7 +1765,80 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
             state.state,
             content_plan.CreateContentPlan.waiting_for_provider,
         )
-        self.assertIn("Выбери AI", message.answers[-1][0])
+        self.assertIn("Выберите способ", message.answers[-1][0])
+
+    async def test_template_plan_is_saved_without_ai_generation(self):
+        message = FakeMessage(content_plan.TEMPLATE_PROVIDER_BUTTON)
+        state = FakeState(
+            data={
+                "user_brief": "План публикаций на неделю",
+                "selected_client": None,
+                "selected_ideas": ["Первая идея"],
+            },
+            state=content_plan.CreateContentPlan.waiting_for_provider,
+        )
+
+        with (
+            patch(
+                "services.content_plan.generate_content_plan",
+            ) as generate_content_plan,
+            patch(
+                "handlers.content_plan.load_post_ideas",
+                return_value=["Первая идея"],
+            ),
+            patch(
+                "storage.content_plans.read_content_plans",
+                return_value=[],
+            ),
+            patch("storage.content_plans.add_content_plan") as add_content_plan,
+        ):
+            await content_plan.generate_new_content_plan(message, state)
+
+        generate_content_plan.assert_not_called()
+        saved_plan = add_content_plan.call_args.args[0]
+        self.assertEqual(saved_plan.count("День "), 7)
+        self.assertNotIn("AI-контент-план", saved_plan)
+        self.assertTrue(state.cleared)
+
+    async def test_missing_ai_key_keeps_method_selection_and_does_not_save(self):
+        message = FakeMessage(content_plan.GEMINI_PROVIDER_BUTTON)
+        state = FakeState(
+            data={
+                "user_brief": "План публикаций на неделю",
+                "selected_client": None,
+                "selected_ideas": [],
+            },
+            state=content_plan.CreateContentPlan.waiting_for_provider,
+        )
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "handlers.content_plan.build_content_plan_text",
+                new=AsyncMock(),
+            ) as build_content_plan_text,
+            patch("storage.content_plans.add_content_plan") as add_content_plan,
+        ):
+            await content_plan.generate_new_content_plan(message, state)
+
+        build_content_plan_text.assert_not_awaited()
+        add_content_plan.assert_not_called()
+        self.assertFalse(state.cleared)
+        self.assertEqual(
+            state.state,
+            content_plan.CreateContentPlan.waiting_for_provider,
+        )
+        self.assertIn("AI сейчас недоступен", message.answers[-1][0])
+
+    def test_template_content_plan_is_valid_seven_day_draft(self):
+        result = content_plan_service.build_template_content_plan_text(
+            None,
+            ["Первая идея"],
+            "План публикаций на неделю",
+        )
+
+        self.assertEqual(result.count("День "), 7)
+        self.assertNotIn("AI-контент-план", result)
 
     async def test_each_provider_is_saved_and_used_for_new_plan(self):
         cases = (
@@ -1801,6 +1864,10 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
 
                 with (
                     patch(
+                        "handlers.content_plan.is_ai_provider_configured",
+                        return_value=True,
+                    ),
+                    patch(
                         "handlers.content_plan.build_content_plan_text",
                         new=AsyncMock(return_value="Готовый план"),
                     ) as build_content_plan_text,
@@ -1813,8 +1880,8 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                         return_value=[],
                     ),
                     patch(
-                        "storage.content_plans.save_content_plans",
-                    ) as save_content_plans,
+                        "storage.content_plans.add_content_plan",
+                    ) as add_content_plan,
                 ):
                     await content_plan.generate_new_content_plan(
                         message,
@@ -1827,9 +1894,7 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                     "Тестовый бриф",
                     provider,
                 )
-                save_content_plans.assert_called_once_with(
-                    ["Готовый план"]
-                )
+                add_content_plan.assert_called_once_with("Готовый план")
                 self.assertTrue(state.cleared)
 
     async def test_provider_error_does_not_save_new_plan(self):
@@ -1845,6 +1910,10 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
+                "handlers.content_plan.is_ai_provider_configured",
+                return_value=True,
+            ),
+            patch(
                 "handlers.content_plan.build_content_plan_text",
                 new=AsyncMock(
                     side_effect=content_plan.ContentPlanGenerationError(
@@ -1852,11 +1921,11 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ),
             ),
-            patch("storage.content_plans.save_content_plans") as save_content_plans,
+            patch("storage.content_plans.add_content_plan") as add_content_plan,
         ):
             await content_plan.generate_new_content_plan(message, state)
 
-        save_content_plans.assert_not_called()
+        add_content_plan.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertIn("Groq сейчас не отвечает.", message.answers[-1][0])
 
@@ -1963,17 +2032,15 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                 return_value=list(plans),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.delete_content_plan_by_position"
+            ) as delete_content_plan_by_position,
         ):
             await content_plan.confirm_delete_content_plan(
                 message,
                 state,
             )
 
-        save_content_plans.assert_called_once_with(
-            [plans[0], plans[2]]
-        )
+        delete_content_plan_by_position.assert_called_once_with(2)
         self.assertTrue(state.cleared)
         self.assertIn(plans[1], message.answers[-1][0])
 
@@ -1996,15 +2063,15 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                 return_value=list(plans),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.delete_content_plan_by_position"
+            ) as delete_content_plan_by_position,
         ):
             await content_plan.confirm_delete_content_plan(
                 message,
                 state,
             )
 
-        save_content_plans.assert_not_called()
+        delete_content_plan_by_position.assert_not_called()
         self.assertEqual(
             state.state,
             content_plan.DeleteContentPlan.waiting_for_number,
@@ -2043,16 +2110,17 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=updated_plan),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.update_content_plan_by_position"
+            ) as update_content_plan_by_position,
         ):
             await content_plan.generate_edited_content_plan(
                 message,
                 state,
             )
 
-        save_content_plans.assert_called_once_with(
-            [plans[0], updated_plan, plans[2]]
+        update_content_plan_by_position.assert_called_once_with(
+            2,
+            updated_plan,
         )
         self.assertTrue(state.cleared)
         self.assertIn(updated_plan, message.answers[-1][0])
@@ -2163,15 +2231,15 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                 return_value=list(plans),
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.delete_content_plan_by_position"
+            ) as delete_content_plan_by_position,
         ):
             await content_plan.confirm_delete_content_plan(
                 message,
                 state,
             )
 
-        save_content_plans.assert_called_once_with([plans[0]])
+        delete_content_plan_by_position.assert_called_once_with(2)
         self.assertTrue(state.cleared)
         self.assertIn("Контент-план удалён", message.answers[-1][0])
 
@@ -2193,15 +2261,15 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
                 return_value=current_plans,
             ),
             patch(
-                "storage.content_plans.save_content_plans"
-            ) as save_content_plans,
+                "storage.content_plans.delete_content_plan_by_position"
+            ) as delete_content_plan_by_position,
         ):
             await content_plan.confirm_delete_content_plan(
                 message,
                 state,
             )
 
-        save_content_plans.assert_not_called()
+        delete_content_plan_by_position.assert_not_called()
         self.assertEqual(
             state.state,
             content_plan.DeleteContentPlan.waiting_for_number,
@@ -2583,6 +2651,10 @@ class ContentPlanHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch(
+                "handlers.content_plan.is_ai_provider_configured",
+                return_value=True,
+            ),
             patch(
                 "handlers.content_plan.build_content_plan_text",
                 new=AsyncMock(

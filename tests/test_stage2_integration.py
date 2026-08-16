@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from aiogram.filters import StateFilter
@@ -14,6 +15,7 @@ from handlers import start as start_handler
 class FakeMessage:
     def __init__(self, text=""):
         self.text = text
+        self.from_user = SimpleNamespace(id=None)
         self.answers = []
 
     async def answer(self, text, **kwargs):
@@ -488,6 +490,11 @@ class ContentPlanIdeaSnapshotTests(unittest.IsolatedAsyncioTestCase):
         save_content_plans = Mock()
 
         with (
+            patch.object(
+                content_plan,
+                "is_ai_provider_configured",
+                return_value=True,
+            ),
             patch.object(
                 content_plan,
                 "load_post_ideas",

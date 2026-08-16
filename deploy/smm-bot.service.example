@@ -1,0 +1,20 @@
+[Unit]
+Description=SMM Bot Telegram application
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<BOT_USER>
+Group=<BOT_GROUP>
+WorkingDirectory=<PROJECT_DIRECTORY>
+EnvironmentFile=<ENVIRONMENT_FILE>
+ExecStart=<PROJECT_DIRECTORY>/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -37,6 +37,7 @@ dist/
 *.sqlite3
 *.db
 *.db-journal
+/backups/
 
 # Logs, temporary files, and local sessions
 *.log

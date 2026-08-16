@@ -1,0 +1,11 @@
+[Unit]
+Description=SMM Bot SQLite backup
+
+[Service]
+Type=oneshot
+User=<BOT_USER>
+Group=<BOT_GROUP>
+WorkingDirectory=<PROJECT_DIRECTORY>
+EnvironmentFile=<ENVIRONMENT_FILE>
+ExecStart=<PROJECT_DIRECTORY>/.venv/bin/python scripts/backup_databases.py
+UMask=0077

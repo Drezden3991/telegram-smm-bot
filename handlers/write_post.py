@@ -95,16 +95,16 @@ async def ask_for_post_method(message):
     )
 
 
-def load_posts():
-    return posts_storage.load_posts()
+def load_posts(telegram_user_id=None):
+    return posts_storage.load_posts(telegram_user_id)
 
 
-def load_clients():
-    return clients_storage.load_clients()
+def load_clients(telegram_user_id=None):
+    return clients_storage.load_clients(telegram_user_id)
 
 
-def load_ideas():
-    ideas = post_ideas_storage.load_post_ideas()
+def load_ideas(telegram_user_id=None):
+    ideas = post_ideas_storage.load_post_ideas(telegram_user_id)
 
     return write_post_service.filter_ideas(
         ideas,
@@ -181,7 +181,7 @@ def get_selected_item(message_text, items):
 
 
 async def show_client_selection(message):
-    clients = load_clients()
+    clients = load_clients(message.from_user.id)
     clients_menu = create_clients_menu(clients)
 
     if clients:
@@ -198,7 +198,7 @@ async def show_client_selection(message):
 
 
 async def show_topic_selection(message):
-    ideas = load_ideas()
+    ideas = load_ideas(message.from_user.id)
     ideas_menu = create_ideas_menu(ideas)
 
     if ideas:
@@ -255,7 +255,7 @@ async def get_client(
     state: FSMContext,
 ):
     selected_text = message.text.strip()
-    clients = load_clients()
+    clients = load_clients(message.from_user.id)
 
     if selected_text == WITHOUT_CLIENT_BUTTON:
         await state.update_data(
@@ -315,7 +315,7 @@ async def get_topic_choice(
     state: FSMContext,
 ):
     selected_text = message.text.strip()
-    ideas = load_ideas()
+    ideas = load_ideas(message.from_user.id)
 
     if selected_text == CUSTOM_TOPIC_BUTTON:
         await state.set_state(
@@ -484,12 +484,15 @@ async def create_template_post(
         await show_topic_selection(message)
         return
 
-    post = write_post_service.create_and_save_post(
+    create_args = (
         data.get("client", ""),
         data.get("client_context"),
         topic,
         data.get("style", ""),
     )
+    if message.from_user.id is not None:
+        create_args += (message.from_user.id,)
+    post = write_post_service.create_and_save_post(*create_args)
     await send_created_post(message, state, post)
 
 
@@ -526,13 +529,16 @@ async def create_ai_post(
     )
 
     try:
-        post = write_post_service.create_and_save_ai_post(
+        create_args = (
             provider,
             data.get("client", ""),
             data.get("client_context"),
             topic,
             data.get("style", ""),
         )
+        if message.from_user.id is not None:
+            create_args += (message.from_user.id,)
+        post = write_post_service.create_and_save_ai_post(*create_args)
     except write_post_service.WritePostGenerationError as error:
         await state.clear()
         await message.answer(
@@ -546,7 +552,7 @@ async def create_ai_post(
 
 @router.message(F.text == "📋 История постов")
 async def post_history(message: Message):
-    posts = load_posts()
+    posts = load_posts(message.from_user.id)
 
     if not posts:
         await message.answer(
@@ -611,7 +617,7 @@ async def get_search_result(
     message: Message,
     state: FSMContext,
 ):
-    posts = load_posts()
+    posts = load_posts(message.from_user.id)
     found_posts = write_post_service.find_posts(
         posts,
         message.text,
@@ -654,7 +660,7 @@ async def delete_post(
     message: Message,
     state: FSMContext,
 ):
-    posts = load_posts()
+    posts = load_posts(message.from_user.id)
 
     if not posts:
         await message.answer(
@@ -703,7 +709,10 @@ async def get_delete_id(
         return
 
     post_id = int(post_id_text)
-    post_was_deleted, _ = write_post_service.delete_post(post_id)
+    post_was_deleted, _ = write_post_service.delete_post(
+        post_id,
+        message.from_user.id,
+    )
 
     if not post_was_deleted:
         await message.answer(

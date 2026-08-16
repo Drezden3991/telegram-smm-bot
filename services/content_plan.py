@@ -1,5 +1,6 @@
 import asyncio
 
+from models.content_plan import ContentPlanDay, SevenDayContentPlan
 from storage import content_plans as content_plans_storage
 
 
@@ -288,12 +289,76 @@ def format_content_plan_text(
     return result.strip()
 
 
+def _template_text(value, max_length):
+    normalized_value = " ".join(str(value).split())
+
+    if len(normalized_value) <= max_length:
+        return normalized_value
+
+    return normalized_value[: max_length - 1].rstrip() + "…"
+
+
+def build_template_content_plan_text(client, selected_ideas, user_brief):
+    """Build a deterministic seven-day content-plan draft without AI."""
+    topics = [_template_text(idea, 90) for idea in selected_ideas]
+    brief_topic = _template_text(f"Тема из брифа: {user_brief}", 90)
+    goals = (
+        "Познакомить с темой",
+        "Показать практическую пользу",
+        "Вовлечь аудиторию",
+        "Раскрыть важный вопрос",
+        "Поделиться полезным советом",
+        "Собрать обратную связь",
+        "Предложить следующий шаг",
+    )
+    formats = (
+        "Текстовый пост",
+        "Карточки",
+        "Опрос",
+        "Вопрос аудитории",
+        "Чек-лист",
+        "Короткое видео",
+        "Итоговый пост",
+    )
+    content_plan = SevenDayContentPlan(
+        days=[
+            ContentPlanDay(
+                day=day,
+                goal=goals[day - 1],
+                topic=(topics[day - 1] if day <= len(topics) else brief_topic),
+                format=formats[day - 1],
+                key_message=(
+                    "Подготовьте публикацию по теме и уточните детали "
+                    "перед публикацией."
+                ),
+                cta="Сохраните идею и уточните детали перед публикацией.",
+            )
+            for day in range(1, 8)
+        ]
+    )
+    result = format_content_plan_text(
+        get_client_full_name(client) if client else "",
+        selected_ideas,
+        user_brief,
+        content_plan,
+    )
+
+    return result.replace("AI-", "", 1)
+
+
 async def build_content_plan_text(
     client,
     selected_ideas,
     user_brief,
     provider="openai",
 ):
+    if provider == "template":
+        return build_template_content_plan_text(
+            client,
+            selected_ideas,
+            user_brief,
+        )
+
     ai_brief = build_ai_brief(
         client,
         selected_ideas,
@@ -516,16 +581,28 @@ def prepare_content_plan_replacement(
     return True, updated_content_plans
 
 
-def create_and_save_content_plan(content_plan):
-    content_plans = content_plans_storage.read_content_plans()
-    content_plans.append(content_plan)
-    content_plans_storage.save_content_plans(content_plans)
+def create_and_save_content_plan(
+    content_plan,
+    telegram_user_id: int | None = None,
+):
+    if telegram_user_id is None:
+        content_plans_storage.add_content_plan(content_plan)
+    else:
+        content_plans_storage.add_content_plan(
+            content_plan, telegram_user_id
+        )
 
     return content_plan
 
 
-def delete_content_plan(number, selected_content_plan):
-    content_plans = content_plans_storage.read_content_plans()
+def delete_content_plan(
+    number,
+    selected_content_plan,
+    telegram_user_id: int | None = None,
+):
+    content_plans = content_plans_storage.read_content_plans(
+        telegram_user_id
+    )
     (
         content_plan_was_deleted,
         deleted_content_plan,
@@ -537,9 +614,12 @@ def delete_content_plan(number, selected_content_plan):
     )
 
     if content_plan_was_deleted:
-        content_plans_storage.save_content_plans(
-            updated_content_plans
-        )
+        if telegram_user_id is None:
+            content_plans_storage.delete_content_plan_by_position(number)
+        else:
+            content_plans_storage.delete_content_plan_by_position(
+                number, telegram_user_id
+            )
 
     return (
         content_plan_was_deleted,
@@ -552,8 +632,11 @@ def replace_content_plan(
     number,
     selected_content_plan,
     updated_content_plan,
+    telegram_user_id: int | None = None,
 ):
-    content_plans = content_plans_storage.read_content_plans()
+    content_plans = content_plans_storage.read_content_plans(
+        telegram_user_id
+    )
     (
         content_plan_was_replaced,
         updated_content_plans,
@@ -565,8 +648,13 @@ def replace_content_plan(
     )
 
     if content_plan_was_replaced:
-        content_plans_storage.save_content_plans(
-            updated_content_plans
-        )
+        if telegram_user_id is None:
+            content_plans_storage.update_content_plan_by_position(
+                number, updated_content_plan
+            )
+        else:
+            content_plans_storage.update_content_plan_by_position(
+                number, updated_content_plan, telegram_user_id
+            )
 
     return content_plan_was_replaced, updated_content_plans

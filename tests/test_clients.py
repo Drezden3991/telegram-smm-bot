@@ -1,6 +1,7 @@
 import importlib
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -31,6 +32,7 @@ def make_client(
 class FakeMessage:
     def __init__(self, text=""):
         self.text = text
+        self.from_user = SimpleNamespace(id=None)
         self.answers = []
 
     async def answer(self, text, **kwargs):
@@ -132,6 +134,9 @@ class ClientLookupTests(unittest.TestCase):
         clients_file = Path(
             self.temporary_directory.name
         ) / "clients.txt"
+        clients_database = Path(
+            self.temporary_directory.name
+        ) / "clients.db"
         self.file_patch = patch.object(
             clients_storage,
             "CLIENTS_FILE",
@@ -139,6 +144,13 @@ class ClientLookupTests(unittest.TestCase):
         )
         self.file_patch.start()
         self.addCleanup(self.file_patch.stop)
+        self.database_patch = patch.object(
+            clients_storage,
+            "CLIENTS_DATABASE",
+            str(clients_database),
+        )
+        self.database_patch.start()
+        self.addCleanup(self.database_patch.stop)
 
         clients_storage.save_clients([self.client])
 
@@ -183,6 +195,9 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         self.clients_file = Path(
             self.temporary_directory.name
         ) / "clients.txt"
+        self.clients_database = Path(
+            self.temporary_directory.name
+        ) / "clients.db"
         self.file_patch = patch.object(
             clients_storage,
             "CLIENTS_FILE",
@@ -190,6 +205,13 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.file_patch.start()
         self.addCleanup(self.file_patch.stop)
+        self.database_patch = patch.object(
+            clients_storage,
+            "CLIENTS_DATABASE",
+            str(self.clients_database),
+        )
+        self.database_patch.start()
+        self.addCleanup(self.database_patch.stop)
 
     async def _create_client_through_handler(self, client):
         state = FakeState()
@@ -244,9 +266,9 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            wraps=clients_storage.save_clients,
-        ) as save_clients:
+            "update_client_field_by_full_name",
+            wraps=clients_storage.update_client_field_by_full_name,
+        ) as update_client:
             await clients_handler.handle_client_text(
                 message,
                 state,
@@ -261,8 +283,11 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             clients_storage.load_clients(),
             [expected_target, original_untouched],
         )
-        save_clients.assert_called_once_with(
-            [expected_target, original_untouched]
+        update_client.assert_called_once_with(
+            original_target["name"],
+            original_target["last_name"],
+            field_name,
+            new_value,
         )
         self.assertTrue(state.cleared)
         self.assertEqual(
@@ -281,9 +306,9 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(
             clients_storage,
-            "save_clients",
-            wraps=clients_storage.save_clients,
-        ) as save_clients:
+            "add_client",
+            wraps=clients_storage.add_client,
+        ) as add_client:
             state = await self._create_client_through_handler(
                 new_client
             )
@@ -292,7 +317,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             clients_storage.load_clients(),
             [new_client],
         )
-        save_clients.assert_called_once_with([new_client])
+        add_client.assert_called_once_with(new_client)
         self.assertTrue(state.cleared)
 
     async def test_duplicate_client_is_not_added_or_saved(self):
@@ -303,12 +328,12 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             state=clients_handler.ClientFlow.waiting_for_last_name,
         )
         message = FakeMessage("Иванов")
-        save_clients = Mock()
+        add_client = Mock()
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            save_clients,
+            "add_client",
+            add_client,
         ):
             await clients_handler.handle_client_text(
                 message,
@@ -319,7 +344,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             clients_storage.load_clients(),
             [existing_client],
         )
-        save_clients.assert_not_called()
+        add_client.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -341,9 +366,9 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            wraps=clients_storage.save_clients,
-        ) as save_clients:
+            "delete_client_by_full_name",
+            wraps=clients_storage.delete_client_by_full_name,
+        ) as delete_client:
             await clients_handler.handle_client_text(
                 message,
                 state,
@@ -357,7 +382,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             clients_storage.load_clients(),
             [remaining_client],
         )
-        save_clients.assert_called_once_with([remaining_client])
+        delete_client.assert_called_once_with("Иван", "Иванов")
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -375,12 +400,12 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             state=clients_handler.ClientFlow.waiting_for_delete,
         )
         message = FakeMessage("Иван Иванов")
-        save_clients = Mock()
+        delete_client = Mock()
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            save_clients,
+            "delete_client_by_full_name",
+            delete_client,
         ):
             await clients_handler.handle_client_text(
                 message,
@@ -392,7 +417,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             clients_storage.load_clients(),
             [remaining_client],
         )
-        save_clients.assert_not_called()
+        delete_client.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -447,12 +472,12 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             state=clients_handler.ClientFlow.waiting_for_edit_value,
         )
         message = FakeMessage(existing_client["phone"])
-        save_clients = Mock()
+        update_client = Mock()
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            save_clients,
+            "update_client_field_by_full_name",
+            update_client,
         ):
             await clients_handler.handle_client_text(
                 message,
@@ -463,7 +488,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             clients_storage.load_clients(),
             [existing_client],
         )
-        save_clients.assert_not_called()
+        update_client.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -485,12 +510,12 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             state=clients_handler.ClientFlow.waiting_for_edit_value,
         )
         message = FakeMessage("Пётр")
-        save_clients = Mock()
+        update_client = Mock()
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            save_clients,
+            "update_client_field_by_full_name",
+            update_client,
         ):
             await clients_handler.handle_client_text(
                 message,
@@ -498,7 +523,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(current_clients, original_clients)
-        save_clients.assert_not_called()
+        update_client.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -520,12 +545,12 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             state=clients_handler.ClientFlow.waiting_for_edit_value,
         )
         message = FakeMessage("Петров")
-        save_clients = Mock()
+        update_client = Mock()
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            save_clients,
+            "update_client_field_by_full_name",
+            update_client,
         ):
             await clients_handler.handle_client_text(
                 message,
@@ -533,7 +558,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(current_clients, original_clients)
-        save_clients.assert_not_called()
+        update_client.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -556,12 +581,12 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             state=clients_handler.ClientFlow.waiting_for_edit_value,
         )
         message = FakeMessage("+372 5555 9999")
-        save_clients = Mock()
+        update_client = Mock()
 
         with patch.object(
             clients_storage,
-            "save_clients",
-            save_clients,
+            "update_client_field_by_full_name",
+            update_client,
         ):
             await clients_handler.handle_client_text(
                 message,
@@ -569,7 +594,7 @@ class ClientCrudCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(current_clients, [remaining_client])
-        save_clients.assert_not_called()
+        update_client.assert_not_called()
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],

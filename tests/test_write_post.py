@@ -1,6 +1,6 @@
-import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -15,6 +15,7 @@ from storage import posts as posts_storage
 class FakeMessage:
     def __init__(self, text=""):
         self.text = text
+        self.from_user = SimpleNamespace(id=None)
         self.answers = []
 
     async def answer(self, text, **kwargs):
@@ -43,7 +44,8 @@ class FakeState:
 @contextmanager
 def patch_post_persistence(posts):
     load_posts = Mock(return_value=posts)
-    save_posts = Mock()
+    add_post = Mock()
+    delete_post_by_id = Mock()
 
     with (
         patch.object(
@@ -53,12 +55,17 @@ def patch_post_persistence(posts):
         ),
         patch.object(
             posts_storage,
-            "save_posts",
-            save_posts,
+            "add_post",
+            add_post,
+        ),
+        patch.object(
+            posts_storage,
+            "delete_post_by_id",
+            delete_post_by_id,
         ),
     ):
 
-        yield load_posts, save_posts
+        yield load_posts, add_post, delete_post_by_id
 
 
 class WritePostStorageTests(unittest.TestCase):
@@ -66,9 +73,9 @@ class WritePostStorageTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
 
-        self.posts_file = Path(
+        self.posts_database = Path(
             self.temporary_directory.name
-        ) / "posts.txt"
+        ) / "posts.db"
 
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
@@ -76,31 +83,15 @@ class WritePostStorageTests(unittest.TestCase):
         self.file_patches.enter_context(
             patch.object(
                 posts_storage,
-                "POSTS_FILE",
-                str(self.posts_file),
+                "POSTS_DATABASE",
+                str(self.posts_database),
             )
         )
 
-    def test_load_posts_returns_empty_for_missing_file(self):
+    def test_load_posts_returns_empty_for_new_database(self):
         self.assertEqual(posts_storage.load_posts(), [])
 
-    def test_load_posts_returns_empty_for_invalid_json(self):
-        self.posts_file.write_text(
-            "{invalid json",
-            encoding="utf-8",
-        )
-
-        self.assertEqual(posts_storage.load_posts(), [])
-
-    def test_load_posts_returns_empty_for_non_list_json(self):
-        self.posts_file.write_text(
-            json.dumps({"id": 1}),
-            encoding="utf-8",
-        )
-
-        self.assertEqual(posts_storage.load_posts(), [])
-
-    def test_load_posts_returns_json_list_without_changes(self):
+    def test_load_posts_returns_saved_records_without_changes(self):
         posts = [
             {
                 "id": 1,
@@ -111,14 +102,11 @@ class WritePostStorageTests(unittest.TestCase):
                 "text": "Текст поста",
             }
         ]
-        self.posts_file.write_text(
-            json.dumps(posts, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        posts_storage.save_posts(posts)
 
         self.assertEqual(posts_storage.load_posts(), posts)
 
-    def test_save_posts_uses_utf8_readable_indented_json(self):
+    def test_save_posts_compatibility_helper_replaces_records(self):
         posts = [
             {
                 "id": 1,
@@ -127,16 +115,19 @@ class WritePostStorageTests(unittest.TestCase):
             }
         ]
 
+        posts_storage.add_post({"id": 9, "text": "Старый пост"})
         posts_storage.save_posts(posts)
 
-        self.assertEqual(
-            self.posts_file.read_text(encoding="utf-8"),
-            json.dumps(
-                posts,
-                ensure_ascii=False,
-                indent=4,
-            ),
-        )
+        self.assertEqual(posts_storage.load_posts(), [
+            {
+                "id": 1,
+                "client": "",
+                "client_context": None,
+                "topic": "Продвижение кофейни",
+                "style": "",
+                "text": "Русский текст без ASCII-экранирования",
+            }
+        ])
 
     def test_saved_posts_can_be_loaded_back(self):
         posts = [
@@ -161,27 +152,18 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
 
         temporary_path = Path(self.temporary_directory.name)
-        self.clients_file = temporary_path / "clients.txt"
+        self.clients_database = temporary_path / "clients.db"
         self.ideas_database = temporary_path / "post_ideas.db"
 
         self.file_patches = ExitStack()
         self.addCleanup(self.file_patches.close)
 
-        if hasattr(write_post, "CLIENTS_FILE"):
-            self.file_patches.enter_context(
-                patch.object(
-                    write_post,
-                    "CLIENTS_FILE",
-                    str(self.clients_file),
-                )
-            )
-
         if hasattr(write_post, "clients_storage"):
             self.file_patches.enter_context(
                 patch.object(
                     write_post.clients_storage,
-                    "CLIENTS_FILE",
-                    str(self.clients_file),
+                    "CLIENTS_DATABASE",
+                    str(self.clients_database),
                 )
             )
 
@@ -230,13 +212,14 @@ class WritePostClientAndIdeaLoadingTests(unittest.TestCase):
             },
         )
 
-    def test_load_clients_reads_nonempty_lines(self):
-        self.clients_file.write_text(
-            "\n"
-            "Иван | Иванов | +372 5555 0000 | @ivan | "
-            "ivan@example.com | Заметка\n"
-            "\n",
-            encoding="utf-8",
+    def test_load_clients_reads_saved_clients(self):
+        clients_storage.save_clients(
+            [
+                clients_storage.create_client_from_line(
+                    "Иван | Иванов | +372 5555 0000 | @ivan | "
+                    "ivan@example.com | Заметка"
+                )
+            ]
         )
 
         self.assertEqual(
@@ -521,15 +504,10 @@ class WritePostHandlerBusinessTests(unittest.IsolatedAsyncioTestCase):
         message = FakeMessage("2")
         state = FakeState()
 
-        with patch_post_persistence(posts) as (_, save_posts):
+        with patch_post_persistence(posts) as (_, _, delete_post_by_id):
             await write_post.get_delete_id(message, state)
 
-        save_posts.assert_called_once_with(
-            [
-                {"id": 1, "text": "Первый"},
-                {"id": 3, "text": "Третий"},
-            ]
-        )
+        delete_post_by_id.assert_called_once_with(2)
         self.assertTrue(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -544,10 +522,10 @@ class WritePostHandlerBusinessTests(unittest.IsolatedAsyncioTestCase):
         message = FakeMessage("99")
         state = FakeState()
 
-        with patch_post_persistence(posts) as (_, save_posts):
+        with patch_post_persistence(posts) as (_, _, delete_post_by_id):
             await write_post.get_delete_id(message, state)
 
-        save_posts.assert_not_called()
+        delete_post_by_id.assert_not_called()
         self.assertFalse(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -559,11 +537,12 @@ class WritePostHandlerBusinessTests(unittest.IsolatedAsyncioTestCase):
         message = FakeMessage("не число")
         state = FakeState()
 
-        with patch_post_persistence([]) as (load_posts, save_posts):
+        with patch_post_persistence([]) as (load_posts, add_post, delete_post_by_id):
             await write_post.get_delete_id(message, state)
 
         load_posts.assert_not_called()
-        save_posts.assert_not_called()
+        add_post.assert_not_called()
+        delete_post_by_id.assert_not_called()
         self.assertFalse(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -612,17 +591,11 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         with patch_post_persistence(
             existing_posts
-        ) as (_, save_posts):
+        ) as (_, add_post, _):
             await write_post.create_template_post(message, state)
 
-        save_posts.assert_called_once()
-        saved_posts = save_posts.call_args.args[0]
-        created_post = saved_posts[-1]
-
-        self.assertEqual(
-            saved_posts[:-1],
-            original_existing_posts,
-        )
+        add_post.assert_called_once()
+        created_post = add_post.call_args.args[0]
         self.assertEqual(
             set(created_post),
             {
@@ -666,11 +639,11 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
         message = FakeMessage("Информационный")
 
-        with patch_post_persistence([]) as (_, save_posts):
+        with patch_post_persistence([]) as (_, add_post, _):
             await write_post.create_template_post(message, state)
 
-        save_posts.assert_called_once()
-        created_post = save_posts.call_args.args[0][-1]
+        add_post.assert_called_once()
+        created_post = add_post.call_args.args[0]
 
         self.assertEqual(created_post["id"], 1)
         self.assertEqual(created_post["client"], "")
@@ -697,7 +670,8 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch_post_persistence([]) as (
                 load_posts,
-                save_posts,
+                add_post,
+                delete_post_by_id,
             ),
             patch.object(
                 write_post,
@@ -708,7 +682,8 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
             await write_post.create_template_post(message, state)
 
         load_posts.assert_not_called()
-        save_posts.assert_not_called()
+        add_post.assert_not_called()
+        delete_post_by_id.assert_not_called()
         self.assertFalse(state.cleared)
         self.assertIs(
             state.state,
@@ -728,12 +703,14 @@ class WritePostCreateHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         with patch_post_persistence([]) as (
             load_posts,
-            save_posts,
+            add_post,
+            delete_post_by_id,
         ):
             await write_post.select_post_style(message, state)
 
         load_posts.assert_not_called()
-        save_posts.assert_not_called()
+        add_post.assert_not_called()
+        delete_post_by_id.assert_not_called()
         self.assertFalse(state.cleared)
         self.assertEqual(
             message.answers[-1][0],
@@ -806,8 +783,8 @@ class WritePostAiDispatcherTests(unittest.TestCase):
             ) as load_posts,
             patch.object(
                 write_post_service.posts_storage,
-                "save_posts",
-            ) as save_posts,
+                "add_post",
+            ) as add_post,
         ):
             with self.assertRaises(
                 write_post_service.WritePostGenerationError
@@ -821,11 +798,11 @@ class WritePostAiDispatcherTests(unittest.TestCase):
                 )
 
         load_posts.assert_not_called()
-        save_posts.assert_not_called()
+        add_post.assert_not_called()
 
     def test_successful_generation_creates_and_saves_post_once(self):
         posts = [{"id": 4, "text": "Старый пост"}]
-        save_posts = Mock()
+        add_post = Mock()
 
         with (
             patch.object(
@@ -840,8 +817,8 @@ class WritePostAiDispatcherTests(unittest.TestCase):
             ),
             patch.object(
                 write_post_service.posts_storage,
-                "save_posts",
-                save_posts,
+                "add_post",
+                add_post,
             ),
         ):
             post = write_post_service.create_and_save_ai_post(
@@ -860,7 +837,7 @@ class WritePostAiDispatcherTests(unittest.TestCase):
         )
         self.assertEqual(post["id"], 5)
         self.assertEqual(post["text"], "AI-текст")
-        save_posts.assert_called_once_with(posts)
+        add_post.assert_called_once_with(post)
 
 
 class WritePostAiHandlerTests(unittest.IsolatedAsyncioTestCase):

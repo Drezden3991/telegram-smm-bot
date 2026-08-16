@@ -1,3 +1,5 @@
+import os
+
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -26,6 +28,7 @@ BACK_BUTTON = "⬅️ Назад"
 OPENAI_PROVIDER_BUTTON = "OpenAI"
 GEMINI_PROVIDER_BUTTON = "Gemini"
 GROQ_PROVIDER_BUTTON = "Groq"
+TEMPLATE_PROVIDER_BUTTON = "📝 По шаблону"
 CONFIRM_DELETE_BUTTON = "✅ Да, удалить"
 CANCEL_DELETE_BUTTON = "❌ Отмена"
 
@@ -66,16 +69,16 @@ content_plan_menu = ReplyKeyboardMarkup(
 )
 
 
-def read_content_plans():
-    return content_plans_storage.read_content_plans()
+def read_content_plans(telegram_user_id=None):
+    return content_plans_storage.read_content_plans(telegram_user_id)
 
 
-def load_clients():
-    return clients_storage.load_clients()
+def load_clients(telegram_user_id=None):
+    return clients_storage.load_clients(telegram_user_id)
 
 
-def load_post_ideas():
-    return post_ideas_storage.load_post_ideas()
+def load_post_ideas(telegram_user_id=None):
+    return post_ideas_storage.load_post_ideas(telegram_user_id)
 
 
 def get_client_full_name(client):
@@ -184,6 +187,21 @@ def create_ai_provider_menu():
     )
 
 
+def create_content_plan_method_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=TEMPLATE_PROVIDER_BUTTON)],
+            [
+                KeyboardButton(text=OPENAI_PROVIDER_BUTTON),
+                KeyboardButton(text=GEMINI_PROVIDER_BUTTON),
+                KeyboardButton(text=GROQ_PROVIDER_BUTTON),
+            ],
+            [KeyboardButton(text=BACK_BUTTON)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def get_selected_ai_provider(message_text):
     providers = {
         OPENAI_PROVIDER_BUTTON: "openai",
@@ -194,11 +212,34 @@ def get_selected_ai_provider(message_text):
     return providers.get(message_text)
 
 
+def get_selected_content_plan_method(message_text):
+    if message_text == TEMPLATE_PROVIDER_BUTTON:
+        return "template"
+
+    return get_selected_ai_provider(message_text)
+
+
 async def ask_for_ai_provider(message):
     await message.answer(
         "Выбери AI для создания контент-плана:",
         reply_markup=create_ai_provider_menu(),
     )
+
+
+async def ask_for_content_plan_method(message):
+    await message.answer(
+        "Выберите способ создания контент-плана:",
+        reply_markup=create_content_plan_method_menu(),
+    )
+
+
+def is_ai_provider_configured(provider):
+    required_keys = {
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "groq": "GROQ_API_KEY",
+    }
+    return bool(os.getenv(required_keys[provider]))
 
 
 def get_selected_idea_number(
@@ -378,7 +419,7 @@ async def show_content_plan_menu(message, state):
 
 
 async def show_client_selection(message):
-    clients = load_clients()
+    clients = load_clients(message.from_user.id)
     clients_menu = create_clients_menu(clients)
 
     if clients:
@@ -403,7 +444,7 @@ async def show_idea_selection(
     post_ideas=None,
 ):
     if post_ideas is None:
-        post_ideas = load_post_ideas()
+        post_ideas = load_post_ideas(message.from_user.id)
 
     post_ideas = list(post_ideas)
     (
@@ -528,7 +569,7 @@ async def select_client_for_new_plan(
     state: FSMContext,
 ):
     selected_text = (message.text or "").strip()
-    clients = load_clients()
+    clients = load_clients(message.from_user.id)
 
     if selected_text == WITHOUT_CLIENT_BUTTON:
         await state.update_data(
@@ -593,7 +634,7 @@ async def select_ideas_for_new_plan(
     state: FSMContext,
 ):
     selected_text = (message.text or "").strip()
-    current_post_ideas = load_post_ideas()
+    current_post_ideas = load_post_ideas(message.from_user.id)
 
     data = await state.get_data()
     post_ideas = data.get(
@@ -782,7 +823,7 @@ async def create_content_plan(
         [],
     )
 
-    current_post_ideas = load_post_ideas()
+    current_post_ideas = load_post_ideas(message.from_user.id)
     (
         selected_ideas,
         missing_selected_ideas,
@@ -815,7 +856,7 @@ async def create_content_plan(
     await state.set_state(
         CreateContentPlan.waiting_for_provider
     )
-    await ask_for_ai_provider(message)
+    await ask_for_content_plan_method(message)
 
 
 @router.message(
@@ -843,7 +884,7 @@ async def generate_edited_content_plan(
 
     if provider is None:
         await message.answer(
-            "Пожалуйста, выбери AI кнопкой ниже.",
+            "Пожалуйста, выберите способ создания кнопкой ниже.",
             reply_markup=create_ai_provider_menu(),
         )
         return
@@ -884,7 +925,7 @@ async def generate_edited_content_plan(
         )
         return
 
-    latest_post_ideas = load_post_ideas()
+    latest_post_ideas = load_post_ideas(message.from_user.id)
     (
         selected_ideas,
         missing_selected_ideas,
@@ -908,14 +949,13 @@ async def generate_edited_content_plan(
         )
         return
 
+    replace_args = (number, selected_content_plan, updated_content_plan)
+    if message.from_user.id is not None:
+        replace_args += (message.from_user.id,)
     (
         content_plan_was_replaced,
         _,
-    ) = content_plan_service.replace_content_plan(
-        number,
-        selected_content_plan,
-        updated_content_plan,
-    )
+    ) = content_plan_service.replace_content_plan(*replace_args)
 
     if not content_plan_was_replaced:
         await state.clear()
@@ -956,12 +996,12 @@ async def generate_new_content_plan(
     message: Message,
     state: FSMContext,
 ):
-    provider = get_selected_ai_provider(message.text)
+    provider = get_selected_content_plan_method(message.text)
 
     if provider is None:
         await message.answer(
             "Пожалуйста, выбери AI кнопкой ниже.",
-            reply_markup=create_ai_provider_menu(),
+            reply_markup=create_content_plan_method_menu(),
         )
         return
 
@@ -975,6 +1015,17 @@ async def generate_new_content_plan(
             CreateContentPlan.waiting_for_brief
         )
         await ask_for_brief(message)
+        return
+
+    if (
+        provider != "template"
+        and not is_ai_provider_configured(provider)
+    ):
+        await message.answer(
+            "Выбранный AI сейчас недоступен. Контент-план не сохранён; "
+            "выберите другой способ.",
+            reply_markup=create_content_plan_method_menu(),
+        )
         return
 
     await state.update_data(ai_provider=provider)
@@ -999,7 +1050,7 @@ async def generate_new_content_plan(
         )
         return
 
-    latest_post_ideas = load_post_ideas()
+    latest_post_ideas = load_post_ideas(message.from_user.id)
     (
         selected_ideas,
         missing_selected_ideas,
@@ -1027,7 +1078,12 @@ async def generate_new_content_plan(
         )
         return
 
-    content_plan_service.create_and_save_content_plan(content_plan)
+    if message.from_user.id is None:
+        content_plan_service.create_and_save_content_plan(content_plan)
+    else:
+        content_plan_service.create_and_save_content_plan(
+            content_plan, message.from_user.id
+        )
     await state.clear()
     await send_long_message(message, content_plan)
     await message.answer(
@@ -1038,7 +1094,7 @@ async def generate_new_content_plan(
 
 @router.message(F.text == "📋 Мои контент-планы")
 async def show_content_plans(message: Message):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
 
     if not content_plans:
         await message.answer(
@@ -1102,7 +1158,7 @@ async def search_content_plan(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
     found_content_plans = content_plan_service.find_content_plans(
         content_plans,
         message.text or "",
@@ -1131,7 +1187,7 @@ async def ask_delete_content_plan_number(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
 
     if not content_plans:
         await message.answer(
@@ -1171,7 +1227,7 @@ async def delete_content_plan(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
     selected_text = (message.text or "").strip()
     data = await state.get_data()
     displayed_content_plans = data.get(
@@ -1251,7 +1307,7 @@ async def back_to_delete_number(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
 
     if not content_plans:
         await state.clear()
@@ -1296,14 +1352,14 @@ async def confirm_delete_content_plan(
     data = await state.get_data()
     number = data.get("content_plan_number")
     selected_content_plan = data.get("selected_content_plan")
+    delete_args = (number, selected_content_plan)
+    if message.from_user.id is not None:
+        delete_args += (message.from_user.id,)
     (
         content_plan_was_deleted,
         deleted_content_plan,
         content_plans,
-    ) = content_plan_service.delete_content_plan(
-        number,
-        selected_content_plan,
-    )
+    ) = content_plan_service.delete_content_plan(*delete_args)
 
     if not content_plan_was_deleted:
         if not content_plans:
@@ -1366,7 +1422,7 @@ async def ask_edit_content_plan_number(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
 
     if not content_plans:
         await message.answer(
@@ -1406,7 +1462,7 @@ async def select_content_plan_for_edit(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
     selected_text = (message.text or "").strip()
     data = await state.get_data()
     displayed_content_plans = data.get(
@@ -1476,7 +1532,7 @@ async def back_to_edit_number(
     message: Message,
     state: FSMContext,
 ):
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
 
     if not content_plans:
         await state.clear()
@@ -1507,7 +1563,7 @@ async def select_client_for_edit(
     state: FSMContext,
 ):
     selected_text = (message.text or "").strip()
-    clients = load_clients()
+    clients = load_clients(message.from_user.id)
 
     if selected_text == WITHOUT_CLIENT_BUTTON:
         await state.update_data(
@@ -1572,7 +1628,7 @@ async def select_ideas_for_edit(
     state: FSMContext,
 ):
     selected_text = (message.text or "").strip()
-    current_post_ideas = load_post_ideas()
+    current_post_ideas = load_post_ideas(message.from_user.id)
 
     data = await state.get_data()
     post_ideas = data.get(
@@ -1769,7 +1825,7 @@ async def edit_content_plan(
         [],
     )
 
-    content_plans = read_content_plans()
+    content_plans = read_content_plans(message.from_user.id)
 
     if not content_plan_service.is_current_content_plan_selection(
         content_plans,
@@ -1785,7 +1841,7 @@ async def edit_content_plan(
         )
         return
 
-    current_post_ideas = load_post_ideas()
+    current_post_ideas = load_post_ideas(message.from_user.id)
     (
         selected_ideas,
         missing_selected_ideas,

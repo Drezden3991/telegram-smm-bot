@@ -50,16 +50,17 @@ def get_field_key(field_name: str) -> str:
     return CLIENT_FIELD_KEYS.get(field_name, "")
 
 
-def load_clients() -> list[Client]:
-    return clients_storage.load_clients()
+def load_clients(telegram_user_id: int | None = None) -> list[Client]:
+    return clients_storage.load_clients(telegram_user_id)
 
 
 def get_client_by_full_name(
     name: str,
     last_name: str,
+    telegram_user_id: int | None = None,
 ) -> Client | None:
     return find_client_by_full_name(
-        load_clients(),
+        load_clients(telegram_user_id),
         name,
         last_name,
     )
@@ -68,15 +69,20 @@ def get_client_by_full_name(
 def current_client_exists(
     name: str,
     last_name: str,
+    telegram_user_id: int | None = None,
 ) -> bool:
     return get_client_by_full_name(
         name,
         last_name,
+        telegram_user_id,
     ) is not None
 
 
-def create_client(client: Client) -> str:
-    clients = load_clients()
+def create_client(
+    client: Client,
+    telegram_user_id: int | None = None,
+) -> str:
+    clients = load_clients(telegram_user_id)
 
     if client_exists(
         clients,
@@ -85,8 +91,10 @@ def create_client(client: Client) -> str:
     ):
         return CLIENT_DUPLICATE
 
-    clients.append(dict(client))
-    clients_storage.save_clients(clients)
+    if telegram_user_id is None:
+        clients_storage.add_client(client)
+    else:
+        clients_storage.add_client(client, telegram_user_id)
 
     return CLIENT_CREATED
 
@@ -94,8 +102,9 @@ def create_client(client: Client) -> str:
 def delete_client(
     name: str,
     last_name: str,
+    telegram_user_id: int | None = None,
 ) -> str:
-    clients = load_clients()
+    clients = load_clients(telegram_user_id)
     client = find_client_by_full_name(
         clients,
         name,
@@ -105,8 +114,14 @@ def delete_client(
     if client is None:
         return CLIENT_NOT_FOUND
 
-    clients.remove(client)
-    clients_storage.save_clients(clients)
+    if telegram_user_id is None:
+        clients_storage.delete_client_by_full_name(name, last_name)
+    else:
+        clients_storage.delete_client_by_full_name(
+            name,
+            last_name,
+            telegram_user_id,
+        )
 
     return CLIENT_DELETED
 
@@ -116,8 +131,9 @@ def edit_client_field(
     last_name: str,
     field_key: str,
     new_value: str,
+    telegram_user_id: int | None = None,
 ) -> tuple[str, Client | None]:
-    clients = load_clients()
+    clients = load_clients(telegram_user_id)
     client = find_client_by_full_name(
         clients,
         name,
@@ -147,18 +163,28 @@ def edit_client_field(
     if client[field_key] == new_value:
         return CLIENT_UNCHANGED, client
 
+    if telegram_user_id is None:
+        clients_storage.update_client_field_by_full_name(
+            name, last_name, field_key, new_value
+        )
+    else:
+        clients_storage.update_client_field_by_full_name(
+            name, last_name, field_key, new_value, telegram_user_id
+        )
     client[field_key] = new_value
-    clients_storage.save_clients(clients)
 
     return CLIENT_UPDATED, client
 
 
-def search_clients(search_text: str) -> list[Client]:
+def search_clients(
+    search_text: str,
+    telegram_user_id: int | None = None,
+) -> list[Client]:
     normalized_search_text = search_text.lower()
 
     return [
         client
-        for client in load_clients()
+        for client in load_clients(telegram_user_id)
         if normalized_search_text
         in f"{client['name']} {client['last_name']}".lower()
     ]
