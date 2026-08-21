@@ -44,6 +44,9 @@ def generate_gemini_content_plan(
     # before the newly pinned dependency is installed.
     from google import genai
     from google.genai import errors as genai_errors
+    from google.genai._gaos.lib.compat_errors import (
+        APIConnectionError as GeminiAPIConnectionError,
+    )
 
     try:
         client = genai.Client()
@@ -118,7 +121,10 @@ def generate_gemini_content_plan(
             "попробуйте позже."
         ) from error
 
-    except httpx.RequestError as error:
+    except (
+        GeminiAPIConnectionError,
+        httpx.RequestError,
+    ) as error:
         raise ContentPlanGenerationError(
             "Gemini сейчас не отвечает. "
             "Проверьте интернет-соединение "

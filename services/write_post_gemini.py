@@ -44,6 +44,9 @@ def generate_gemini_post(
     # optional Gemini dependency is not installed in the environment.
     from google import genai
     from google.genai import errors as genai_errors
+    from google.genai._gaos.lib.compat_errors import (
+        APIConnectionError as GeminiAPIConnectionError,
+    )
 
     try:
         client = genai.Client()
@@ -120,7 +123,10 @@ def generate_gemini_post(
             "Пост не сохранён; попробуйте позже."
         ) from error
 
-    except httpx.RequestError as error:
+    except (
+        GeminiAPIConnectionError,
+        httpx.RequestError,
+    ) as error:
         raise WritePostGenerationError(
             "Gemini сейчас не отвечает. "
             "Проверьте интернет-соединение "

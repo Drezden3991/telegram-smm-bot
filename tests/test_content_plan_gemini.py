@@ -5,6 +5,9 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from google.genai._gaos.lib.compat_errors import (
+    APIConnectionError as GeminiAPIConnectionError,
+)
 
 from models.content_plan import SevenDayContentPlan
 from services import content_plan as content_plan_service
@@ -362,14 +365,21 @@ class GeminiContentPlanTests(unittest.TestCase):
             "POST",
             "https://generativelanguage.googleapis.com",
         )
-        message = self.assert_generation_error(
-            create_error=httpx.ConnectError(
+        errors = (
+            httpx.ConnectError(
                 "Connection failed",
                 request=request,
-            )
+            ),
+            GeminiAPIConnectionError(request=request),
         )
 
-        self.assertIn("Gemini сейчас не отвечает", message)
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                message = self.assert_generation_error(
+                    create_error=error
+                )
+
+                self.assertIn("Gemini сейчас не отвечает", message)
 
     def test_unexpected_runtime_error_is_not_masked(self):
         with self.assertRaisesRegex(

@@ -4,6 +4,9 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
+from google.genai._gaos.lib.compat_errors import (
+    APIConnectionError as GeminiAPIConnectionError,
+)
 
 from services import write_post as write_post_service
 from services import write_post_gemini
@@ -224,14 +227,21 @@ class GeminiWritePostTests(unittest.TestCase):
             "POST",
             "https://example.invalid",
         )
-        message = self.assert_generation_error(
-            create_error=httpx.ConnectError(
+        errors = (
+            httpx.ConnectError(
                 "Connection failed",
                 request=request,
-            )
+            ),
+            GeminiAPIConnectionError(request=request),
         )
 
-        self.assertIn("сейчас не отвечает", message)
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                message = self.assert_generation_error(
+                    create_error=error
+                )
+
+                self.assertIn("сейчас не отвечает", message)
 
     def test_unexpected_runtime_error_is_not_masked(self):
         runtime_error = RuntimeError("Programming error")

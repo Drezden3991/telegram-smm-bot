@@ -38,6 +38,7 @@ dist/
 *.db
 *.db-journal
 /backups/
+/legacy_backup/
 
 # Logs, temporary files, and local sessions
 *.log

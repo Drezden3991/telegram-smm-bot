@@ -379,14 +379,18 @@ async def generate_ai_post_ideas(
         )
         if message.from_user.id is not None:
             generation_args += (message.from_user.id,)
+
         candidates = post_ideas_service.generate_post_idea_candidates(
             *generation_args
         )
+
     except post_ideas_service.PostIdeasGenerationError as error:
-        await state.clear()
+        await state.set_state(
+            GeneratePostIdeas.waiting_for_provider
+        )
         await message.answer(
             str(error),
-            reply_markup=post_ideas_menu,
+            reply_markup=create_ai_provider_menu(),
         )
         return
 
@@ -440,9 +444,11 @@ async def save_selected_ai_post_ideas(
     save_args = (selected_ideas,)
     if message.from_user.id is not None:
         save_args += (message.from_user.id,)
+
     added_ideas, duplicate_ideas = (
         post_ideas_service.save_selected_post_ideas(*save_args)
     )
+
     await state.clear()
 
     if added_ideas:
@@ -455,7 +461,10 @@ async def save_selected_ai_post_ideas(
     else:
         result = "⚠️ Все выбранные идеи уже есть в списке."
 
-    await message.answer(result, reply_markup=post_ideas_menu)
+    await message.answer(
+        result,
+        reply_markup=post_ideas_menu,
+    )
 
 
 @router.message(GeneratePostIdeas.waiting_for_candidates)
@@ -465,8 +474,14 @@ async def toggle_ai_post_idea_candidate(
 ):
     data = await state.get_data()
     candidates = data.get("ai_candidates", [])
-    selected_ideas = list(data.get("selected_ai_candidates", []))
-    candidate = get_selected_ai_candidate(message.text, candidates)
+    selected_ideas = list(
+        data.get("selected_ai_candidates", [])
+    )
+
+    candidate = get_selected_ai_candidate(
+        message.text,
+        candidates,
+    )
 
     if candidate is None:
         await message.answer(
@@ -483,7 +498,10 @@ async def toggle_ai_post_idea_candidate(
     else:
         selected_ideas.append(candidate)
 
-    await state.update_data(selected_ai_candidates=selected_ideas)
+    await state.update_data(
+        selected_ai_candidates=selected_ideas
+    )
+
     await message.answer(
         "Выбери идеи для сохранения, затем нажми «Сохранить выбранные».",
         reply_markup=create_ai_candidates_menu(
@@ -501,18 +519,30 @@ async def show_all_post_ideas(message: Message):
         await message.answer("Список идей пока пуст.")
         return
 
-    await message.answer(format_post_ideas_list(post_ideas))
+    await message.answer(
+        format_post_ideas_list(post_ideas)
+    )
 
 
 @router.message(F.text == "➕ Добавить идею")
-async def add_post_idea(message: Message, state: FSMContext):
-    await state.set_state(AddPostIdea.waiting_for_idea)
+async def add_post_idea(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(
+        AddPostIdea.waiting_for_idea
+    )
 
-    await message.answer("Введите новую идею поста:")
+    await message.answer(
+        "Введите новую идею поста:"
+    )
 
 
 @router.message(AddPostIdea.waiting_for_idea)
-async def save_new_post_idea(message: Message, state: FSMContext):
+async def save_new_post_idea(
+    message: Message,
+    state: FSMContext,
+):
     (
         creation_status,
         formatted_idea,
@@ -526,7 +556,7 @@ async def save_new_post_idea(message: Message, state: FSMContext):
 
         await message.answer(
             "⚠️ Такая идея уже есть в списке.",
-            reply_markup=post_ideas_menu
+            reply_markup=post_ideas_menu,
         )
         return
 
@@ -534,19 +564,27 @@ async def save_new_post_idea(message: Message, state: FSMContext):
 
     await message.answer(
         f"✅ Идея добавлена:\n\n{formatted_idea}",
-        reply_markup=post_ideas_menu
+        reply_markup=post_ideas_menu,
     )
 
 
 @router.message(F.text == "🗑 Удалить идею")
-async def delete_post_idea(message: Message, state: FSMContext):
+async def delete_post_idea(
+    message: Message,
+    state: FSMContext,
+):
     post_ideas = load_post_ideas(message.from_user.id)
 
     if not post_ideas:
-        await message.answer("Список идей пока пуст.")
+        await message.answer(
+            "Список идей пока пуст."
+        )
         return
 
-    await state.set_state(DeletePostIdea.waiting_for_idea_number)
+    await state.set_state(
+        DeletePostIdea.waiting_for_idea_number
+    )
+
     await state.update_data(
         post_ideas_snapshot=list(post_ideas)
     )
@@ -558,24 +596,38 @@ async def delete_post_idea(message: Message, state: FSMContext):
 
 
 @router.message(DeletePostIdea.waiting_for_idea_number)
-async def delete_post_idea_by_number(message: Message, state: FSMContext):
+async def delete_post_idea_by_number(
+    message: Message,
+    state: FSMContext,
+):
     data = await state.get_data()
 
-    deletion_args = (message.text, data.get("post_ideas_snapshot"))
+    deletion_args = (
+        message.text,
+        data.get("post_ideas_snapshot"),
+    )
+
     if message.from_user.id is not None:
         deletion_args += (message.from_user.id,)
+
     (
         deletion_status,
         deleted_idea,
         current_post_ideas,
-    ) = post_ideas_service.delete_post_idea(*deletion_args)
+    ) = post_ideas_service.delete_post_idea(
+        *deletion_args
+    )
 
     if deletion_status == post_ideas_service.IDEA_NUMBER_NOT_DIGIT:
-        await message.answer("Введите номер идеи числом.")
+        await message.answer(
+            "Введите номер идеи числом."
+        )
         return
 
     if deletion_status == post_ideas_service.IDEA_NUMBER_NOT_FOUND:
-        await message.answer("Идеи с таким номером нет.")
+        await message.answer(
+            "Идеи с таким номером нет."
+        )
         return
 
     if deletion_status == post_ideas_service.IDEA_SELECTION_STALE:
@@ -602,26 +654,39 @@ async def delete_post_idea_by_number(message: Message, state: FSMContext):
 
     await message.answer(
         f"🗑 Идея удалена:\n\n{deleted_idea}",
-        reply_markup=post_ideas_menu
+        reply_markup=post_ideas_menu,
     )
 
 
 @router.message(F.text == "🔍 Найти идею")
-async def search_post_idea(message: Message, state: FSMContext):
+async def search_post_idea(
+    message: Message,
+    state: FSMContext,
+):
     post_ideas = load_post_ideas(message.from_user.id)
 
     if not post_ideas:
-        await message.answer("Список идей пока пуст.")
+        await message.answer(
+            "Список идей пока пуст."
+        )
         return
 
-    await state.set_state(SearchPostIdea.waiting_for_search_text)
+    await state.set_state(
+        SearchPostIdea.waiting_for_search_text
+    )
 
-    await message.answer("Введите слово или фразу для поиска:")
+    await message.answer(
+        "Введите слово или фразу для поиска:"
+    )
 
 
 @router.message(SearchPostIdea.waiting_for_search_text)
-async def show_found_post_ideas(message: Message, state: FSMContext):
+async def show_found_post_ideas(
+    message: Message,
+    state: FSMContext,
+):
     post_ideas = load_post_ideas(message.from_user.id)
+
     found_ideas = post_ideas_service.find_post_ideas(
         post_ideas,
         message.text,
@@ -632,7 +697,7 @@ async def show_found_post_ideas(message: Message, state: FSMContext):
     if not found_ideas:
         await message.answer(
             "По вашему запросу ничего не найдено.",
-            reply_markup=post_ideas_menu
+            reply_markup=post_ideas_menu,
         )
         return
 
@@ -642,19 +707,26 @@ async def show_found_post_ideas(message: Message, state: FSMContext):
             f"{number}. {idea}"
             for number, idea in found_ideas
         ),
-        reply_markup=post_ideas_menu
+        reply_markup=post_ideas_menu,
     )
 
 
 @router.message(F.text == "✏️ Редактировать идею")
-async def edit_post_idea(message: Message, state: FSMContext):
+async def edit_post_idea(
+    message: Message,
+    state: FSMContext,
+):
     post_ideas = load_post_ideas(message.from_user.id)
 
     if not post_ideas:
-        await message.answer("Список идей пока пуст.")
+        await message.answer(
+            "Список идей пока пуст."
+        )
         return
 
-    await state.set_state(EditPostIdea.waiting_for_idea_number)
+    await state.set_state(
+        EditPostIdea.waiting_for_idea_number
+    )
 
     await message.answer(
         format_post_ideas_list(post_ideas)
@@ -663,7 +735,10 @@ async def edit_post_idea(message: Message, state: FSMContext):
 
 
 @router.message(EditPostIdea.waiting_for_idea_number)
-async def choose_post_idea_for_edit(message: Message, state: FSMContext):
+async def choose_post_idea_for_edit(
+    message: Message,
+    state: FSMContext,
+):
     post_ideas = load_post_ideas(message.from_user.id)
 
     (
@@ -676,11 +751,15 @@ async def choose_post_idea_for_edit(message: Message, state: FSMContext):
     )
 
     if selection_status == post_ideas_service.IDEA_NUMBER_NOT_DIGIT:
-        await message.answer("Введите номер идеи числом.")
+        await message.answer(
+            "Введите номер идеи числом."
+        )
         return
 
     if selection_status == post_ideas_service.IDEA_NUMBER_NOT_FOUND:
-        await message.answer("Идеи с таким номером нет.")
+        await message.answer(
+            "Идеи с таким номером нет."
+        )
         return
 
     await state.update_data(
@@ -688,7 +767,9 @@ async def choose_post_idea_for_edit(message: Message, state: FSMContext):
         selected_idea=selected_idea,
     )
 
-    await state.set_state(EditPostIdea.waiting_for_new_idea_text)
+    await state.set_state(
+        EditPostIdea.waiting_for_new_idea_text
+    )
 
     await message.answer(
         f"Текущая идея:\n\n{selected_idea}\n\n"
@@ -697,8 +778,12 @@ async def choose_post_idea_for_edit(message: Message, state: FSMContext):
 
 
 @router.message(EditPostIdea.waiting_for_new_idea_text)
-async def save_edited_post_idea(message: Message, state: FSMContext):
+async def save_edited_post_idea(
+    message: Message,
+    state: FSMContext,
+):
     data = await state.get_data()
+
     idea_number = data.get("idea_number")
     selected_idea = data.get("selected_idea")
 
@@ -707,6 +792,7 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
         selected_idea,
         message.text,
     )
+
     if message.from_user.id is not None:
         edit_args += (message.from_user.id,)
 
@@ -714,7 +800,9 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
         edit_status,
         formatted_idea,
         current_post_ideas,
-    ) = post_ideas_service.edit_post_idea(*edit_args)
+    ) = post_ideas_service.edit_post_idea(
+        *edit_args
+    )
 
     if edit_status == post_ideas_service.IDEA_SELECTION_STALE:
         if not current_post_ideas:
@@ -742,7 +830,7 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
 
         await message.answer(
             "⚠️ Такая идея уже есть в списке.",
-            reply_markup=post_ideas_menu
+            reply_markup=post_ideas_menu,
         )
         return
 
@@ -750,7 +838,7 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
 
     await message.answer(
         f"✅ Идея обновлена:\n\n{formatted_idea}",
-        reply_markup=post_ideas_menu
+        reply_markup=post_ideas_menu,
     )
 
 
@@ -758,10 +846,13 @@ async def save_edited_post_idea(message: Message, state: FSMContext):
     StateFilter(None),
     F.text == "⬅️ Назад",
 )
-async def back(message: Message, state: FSMContext):
+async def back(
+    message: Message,
+    state: FSMContext,
+):
     await state.clear()
 
     await message.answer(
         "Главное меню:",
-        reply_markup=main_menu
+        reply_markup=main_menu,
     )

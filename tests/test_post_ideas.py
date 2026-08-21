@@ -302,7 +302,8 @@ class PostIdeasAiHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_error_does_not_save_candidates(self):
         message = FakeMessage(post_ideas.GROQ_PROVIDER_BUTTON)
         state = FakeState(
-            data={"selected_client": None, "ai_brief": "Бриф"}
+            data={"selected_client": None, "ai_brief": "Бриф"},
+            state=post_ideas.GeneratePostIdeas.waiting_for_provider,
         )
         error = post_ideas_service.PostIdeasGenerationError(
             "Groq сейчас не отвечает."
@@ -322,8 +323,18 @@ class PostIdeasAiHandlerTests(unittest.IsolatedAsyncioTestCase):
             await post_ideas.generate_ai_post_ideas(message, state)
 
         save.assert_not_called()
-        self.assertTrue(state.cleared)
-        self.assertIn("Groq сейчас не отвечает.", message.answers[-1][0])
+        self.assertFalse(state.cleared)
+        self.assertIs(
+            state.state,
+            post_ideas.GeneratePostIdeas.waiting_for_provider,
+        )
+        self.assertIn(
+            "Groq сейчас не отвечает.",
+            message.answers[-1][0],
+        )
+        self.assertIsNotNone(
+            message.answers[-1][1].get("reply_markup")
+        )
 
     async def test_back_from_provider_selection_returns_to_brief(self):
         message = FakeMessage(post_ideas.BACK_BUTTON)
